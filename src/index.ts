@@ -1,6 +1,13 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+
+import type { AIContext, NotificationEventType, PluginConfig } from './types/config.js';
+import type { PendingReminder, PluginState, ScheduleReminderOptions, SmartNotifyOptions } from './types/events.js';
+import type { DesktopNotifyOptions, WebhookNotifyOptions } from './types/notification.js';
+import type { PluginEvent, PluginHandlers, PluginInitParams, Session } from './types/opencode-sdk.js';
+import type { TTSAPI } from './types/tts.js';
+
 import { createTTS, getTTSConfig } from './util/tts.js';
 import { getSmartMessage } from './util/ai-messages.js';
 import { notifyTaskComplete, notifyPermissionRequest, notifyQuestion, notifyError } from './util/desktop-notify.js';
@@ -8,6 +15,26 @@ import { notifyWebhookIdle, notifyWebhookPermission, notifyWebhookError, notifyW
 import { isTerminalFocused } from './util/focus-detect.js';
 import { pickThemeSound } from './util/sound-theme.js';
 import { getProjectSound } from './util/per-project-sound.js';
+
+type ToastVariant = 'info' | 'success' | 'warning' | 'error';
+
+interface NotificationMetaOptions {
+  count?: number;
+  sessionId?: string;
+}
+
+interface MessageInfo {
+  id?: string;
+  role?: string;
+  time?: {
+    created?: number;
+  };
+}
+
+const getErrorMessage = (error: unknown): string => {
+  const maybeError = error as { message?: unknown };
+  return String(maybeError?.message ?? error);
+};
 
 /**
  * OpenCode Smart Voice Notify Plugin
@@ -27,8 +54,14 @@ import { getProjectSound } from './util/per-project-sound.js';
  * 
  * @type {import("@opencode-ai/plugin").Plugin}
  */
-export default async function SmartVoiceNotifyPlugin({ project, client, $, directory, worktree }) {
-  let config = getTTSConfig();
+export default async function SmartVoiceNotifyPlugin({
+  project,
+  client,
+  $,
+  directory,
+  worktree,
+}: PluginInitParams): Promise<PluginHandlers> {
+  let config: PluginConfig = getTTSConfig();
 
   // Derive project name from worktree path since SDK's Project type doesn't have a 'name' property
   // Example: C:\Repository\opencode-smart-voice-notify -> opencode-smart-voice-notify
@@ -52,16 +85,13 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
         }
         const timestamp = new Date().toISOString();
         fs.appendFileSync(logFile, `[${timestamp}] Plugin disabled via config (enabled: ${config.enabled}) - no event handlers registered\n`);
-      } catch (e) {}
+      } catch {}
     }
     return {};
   }
 
 
-  let tts = createTTS({ $, client });
-
-
-  const platform = os.platform();
+  let tts: TTSAPI = createTTS({ $, client });
 
   const configDir = process.env.OPENCODE_CONFIG_DIR || path.join(os.homedir(), '.config', 'opencode');
   const logsDir = path.join(configDir, 'logs');
@@ -71,28 +101,28 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   if (config.debugLog && !fs.existsSync(logsDir)) {
     try {
       fs.mkdirSync(logsDir, { recursive: true });
-    } catch (e) {
+    } catch {
       // Silently fail - logging is optional
     }
   }
 
   // Track pending TTS reminders (can be cancelled if user responds)
-  const pendingReminders = new Map();
+  const pendingReminders: PluginState['pendingReminders'] = new Map<NotificationEventType, PendingReminder>();
   
   // Track last user activity time
-  let lastUserActivityTime = Date.now();
+  let lastUserActivityTime: PluginState['lastUserActivityTime'] = Date.now();
   
   // Track seen user message IDs to avoid treating message UPDATES as new user activity
   // Key insight: message.updated fires for EVERY modification to a message, not just new messages
   // We only want to treat the FIRST occurrence of each user message as "user activity"
-  const seenUserMessageIds = new Set();
+  const seenUserMessageIds: PluginState['seenUserMessageIds'] = new Set<string>();
   
   // Track the timestamp of when session went idle, to detect post-idle user messages
-  let lastSessionIdleTime = 0;
+  let lastSessionIdleTime: PluginState['lastSessionIdleTime'] = 0;
   
   // Track active permission request to prevent race condition where user responds
   // before async notification code runs. Set on permission.updated, cleared on permission.replied.
-  let activePermissionId = null;
+  let activePermissionId: PluginState['activePermissionId'] = null;
 
   // ========================================
   // IDLE EVENT DEBOUNCING STATE
@@ -101,7 +131,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   // ========================================
   
   // Map of sessionID -> timestamp of last processed idle notification
-  const lastIdleNotificationTime = new Map();
+  const lastIdleNotificationTime: PluginState['lastIdleNotificationTime'] = new Map<string, number>();
   
   // Debounce window in milliseconds - skip duplicate idle events within this window
   // 5 seconds is long enough to catch rapid duplicates but short enough to allow
@@ -114,10 +144,10 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   // ========================================
   
   // Array of permission IDs waiting to be notified (collected during batch window)
-  let pendingPermissionBatch = [];
+  let pendingPermissionBatch: PluginState['pendingPermissionBatch'] = [];
   
   // Timeout ID for the batch window (debounce timer)
-  let permissionBatchTimeout = null;
+  let permissionBatchTimeout: PluginState['permissionBatchTimeout'] = null;
   
   // Batch window duration in milliseconds (how long to wait for more permissions)
   const PERMISSION_BATCH_WINDOW_MS = config.permissionBatchWindowMs || 800;
@@ -129,27 +159,27 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   
   // Array of question request objects waiting to be notified (collected during batch window)
   // Each object contains { id: string, questionCount: number } to track actual question count
-  let pendingQuestionBatch = [];
+  let pendingQuestionBatch: PluginState['pendingQuestionBatch'] = [];
   
   // Timeout ID for the question batch window (debounce timer)
-  let questionBatchTimeout = null;
+  let questionBatchTimeout: PluginState['questionBatchTimeout'] = null;
   
   // Batch window duration in milliseconds (how long to wait for more questions)
   const QUESTION_BATCH_WINDOW_MS = config.questionBatchWindowMs || 800;
   
   // Track active question request to prevent race condition where user responds
   // before async notification code runs. Set on question.asked, cleared on question.replied/rejected.
-  let activeQuestionId = null;
+  let activeQuestionId: PluginState['activeQuestionId'] = null;
 
   /**
    * Write debug message to log file
    */
-  const debugLog = (message) => {
+  const debugLog = (message: string): void => {
     if (!config.debugLog) return;
     try {
       const timestamp = new Date().toISOString();
       fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
-    } catch (e) {}
+    } catch {}
   };
 
   /**
@@ -161,7 +191,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * 
    * @returns {Promise<boolean>} True if notifications should be suppressed
    */
-  const shouldSuppressNotification = async () => {
+  const shouldSuppressNotification = async (): Promise<boolean> => {
     // If alwaysNotify is true, never suppress
     if (config.alwaysNotify) {
       debugLog('shouldSuppressNotification: alwaysNotify=true, not suppressing');
@@ -181,8 +211,8 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
         debugLog('shouldSuppressNotification: terminal is focused, suppressing sound/desktop notifications');
         return true;
       }
-    } catch (e) {
-      debugLog(`shouldSuppressNotification: focus detection error: ${e.message}`);
+    } catch (error) {
+      debugLog(`shouldSuppressNotification: focus detection error: ${getErrorMessage(error)}`);
       // On error, fail open (don't suppress)
     }
     
@@ -192,17 +222,17 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   /**
    * Get a random message from an array of messages
    */
-  const getRandomMessage = (messages) => {
+  const getRandomMessage = (messages: string[] | null | undefined): string => {
     if (!Array.isArray(messages) || messages.length === 0) {
       return 'Notification';
     }
-    return messages[Math.floor(Math.random() * messages.length)];
+    return messages[Math.floor(Math.random() * messages.length)]!;
   };
 
   /**
    * Show a TUI toast notification
    */
-  const showToast = async (message, variant = 'info', duration = 5000) => {
+  const showToast = async (message: string, variant: ToastVariant = 'info', duration = 5000): Promise<void> => {
     if (!config.enableToast) return;
     try {
       if (typeof client?.tui?.showToast === 'function') {
@@ -214,7 +244,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
           }
         });
       }
-    } catch (e) {}
+    } catch {}
   };
 
   /**
@@ -225,42 +255,42 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {string} message - Notification message
    * @param {object} options - Additional options (count for permission/question/error)
    */
-  const sendDesktopNotify = (type, message, options = {}) => {
+  const sendDesktopNotify = (type: NotificationEventType, message: string, options: NotificationMetaOptions = {}): void => {
     if (!config.enableDesktopNotification) return;
     
     try {
       // Build options with project name if configured
       // Note: SDK's Project type doesn't have 'name' property, so we use derivedProjectName
-      const notifyOptions = {
+      const notifyOptions: DesktopNotifyOptions = {
         projectName: config.showProjectInNotification && derivedProjectName ? derivedProjectName : undefined,
         timeout: config.desktopNotificationTimeout || 5,
         debugLog: config.debugLog,
-        count: options.count || 1
+        count: options.count || 1,
       };
       
       // Fire and forget (no await) - desktop notification should not block other operations
       // Use the appropriate helper function based on notification type
       if (type === 'idle') {
-        notifyTaskComplete(message, notifyOptions).catch(e => {
-          debugLog(`Desktop notification error (idle): ${e.message}`);
+        notifyTaskComplete(message, notifyOptions).catch((error: unknown) => {
+          debugLog(`Desktop notification error (idle): ${getErrorMessage(error)}`);
         });
       } else if (type === 'permission') {
-        notifyPermissionRequest(message, notifyOptions).catch(e => {
-          debugLog(`Desktop notification error (permission): ${e.message}`);
+        notifyPermissionRequest(message, notifyOptions).catch((error: unknown) => {
+          debugLog(`Desktop notification error (permission): ${getErrorMessage(error)}`);
         });
       } else if (type === 'question') {
-        notifyQuestion(message, notifyOptions).catch(e => {
-          debugLog(`Desktop notification error (question): ${e.message}`);
+        notifyQuestion(message, notifyOptions).catch((error: unknown) => {
+          debugLog(`Desktop notification error (question): ${getErrorMessage(error)}`);
         });
       } else if (type === 'error') {
-        notifyError(message, notifyOptions).catch(e => {
-          debugLog(`Desktop notification error (error): ${e.message}`);
+        notifyError(message, notifyOptions).catch((error: unknown) => {
+          debugLog(`Desktop notification error (error): ${getErrorMessage(error)}`);
         });
       }
       
       debugLog(`sendDesktopNotify: sent ${type} notification`);
-    } catch (e) {
-      debugLog(`sendDesktopNotify error: ${e.message}`);
+    } catch (error) {
+      debugLog(`sendDesktopNotify error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -272,7 +302,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {string} message - Notification message
    * @param {object} options - Additional options (count, sessionId)
    */
-  const sendWebhookNotify = (type, message, options = {}) => {
+  const sendWebhookNotify = (type: NotificationEventType, message: string, options: NotificationMetaOptions = {}): void => {
     if (!config.enableWebhook || !config.webhookUrl) return;
     
     // Check if this event type is enabled in webhookEvents
@@ -283,37 +313,37 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
     
     try {
       // Note: SDK's Project type doesn't have 'name' property, so we use derivedProjectName
-      const webhookOptions = {
-        projectName: derivedProjectName,
+      const webhookOptions: WebhookNotifyOptions = {
+        projectName: derivedProjectName ?? undefined,
         sessionId: options.sessionId,
         count: options.count || 1,
         username: config.webhookUsername,
         debugLog: config.debugLog,
-        mention: type === 'permission' ? config.webhookMentionOnPermission : false
+        mention: type === 'permission' ? config.webhookMentionOnPermission : false,
       };
       
       // Fire and forget (no await)
       if (type === 'idle') {
-        notifyWebhookIdle(config.webhookUrl, message, webhookOptions).catch(e => {
-          debugLog(`Webhook notification error (idle): ${e.message}`);
+        notifyWebhookIdle(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
+          debugLog(`Webhook notification error (idle): ${getErrorMessage(error)}`);
         });
       } else if (type === 'permission') {
-        notifyWebhookPermission(config.webhookUrl, message, webhookOptions).catch(e => {
-          debugLog(`Webhook notification error (permission): ${e.message}`);
+        notifyWebhookPermission(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
+          debugLog(`Webhook notification error (permission): ${getErrorMessage(error)}`);
         });
       } else if (type === 'question') {
-        notifyWebhookQuestion(config.webhookUrl, message, webhookOptions).catch(e => {
-          debugLog(`Webhook notification error (question): ${e.message}`);
+        notifyWebhookQuestion(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
+          debugLog(`Webhook notification error (question): ${getErrorMessage(error)}`);
         });
       } else if (type === 'error') {
-        notifyWebhookError(config.webhookUrl, message, webhookOptions).catch(e => {
-          debugLog(`Webhook notification error (error): ${e.message}`);
+        notifyWebhookError(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
+          debugLog(`Webhook notification error (error): ${getErrorMessage(error)}`);
         });
       }
       
       debugLog(`sendWebhookNotify: sent ${type} notification`);
-    } catch (e) {
-      debugLog(`sendWebhookNotify error: ${e.message}`);
+    } catch (error) {
+      debugLog(`sendWebhookNotify error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -323,7 +353,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {number} loops - Number of times to loop
    * @param {string} eventType - Event type for theme support (idle, permission, error, question)
    */
-  const playSound = async (soundFile, loops = 1, eventType = null) => {
+  const playSound = async (soundFile: string, loops = 1, eventType: NotificationEventType | null = null): Promise<void> => {
     if (!config.enableSound) return;
     try {
       let soundPath = soundFile;
@@ -370,8 +400,8 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
       await tts.forceVolume();
       await tts.playAudioFile(finalPath, loops);
       debugLog(`playSound: played ${finalPath} (${loops}x)`);
-    } catch (e) {
-      debugLog(`playSound error: ${e.message}`);
+    } catch (error) {
+      debugLog(`playSound error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -379,7 +409,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   /**
    * Cancel any pending TTS reminder for a given type
    */
-  const cancelPendingReminder = (type) => {
+  const cancelPendingReminder = (type: NotificationEventType): void => {
     const existing = pendingReminders.get(type);
     if (existing) {
       clearTimeout(existing.timeoutId);
@@ -391,7 +421,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   /**
    * Cancel all pending TTS reminders (called on user activity)
    */
-  const cancelAllPendingReminders = () => {
+  const cancelAllPendingReminders = (): void => {
     for (const [type, reminder] of pendingReminders.entries()) {
       clearTimeout(reminder.timeoutId);
       debugLog(`cancelAllPendingReminders: cancelled ${type}`);
@@ -406,7 +436,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {string} _message - DEPRECATED: No longer used (AI message is generated when reminder fires)
    * @param {object} options - Additional options (fallbackSound, permissionCount, questionCount, errorCount, aiContext)
    */
-  const scheduleTTSReminder = (type, _message, options = {}) => {
+  const scheduleTTSReminder = (type: NotificationEventType, _message: string | null, options: ScheduleReminderOptions = {}): void => {
     // Check if TTS reminders are enabled
     if (!config.enableTTSReminder) {
       debugLog(`scheduleTTSReminder: TTS reminders disabled`);
@@ -432,7 +462,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
     }
 
     // Get delay from config (in seconds, convert to ms)
-    let delaySeconds;
+    let delaySeconds: number;
     if (type === 'permission') {
       delaySeconds = config.permissionReminderDelaySeconds || config.ttsReminderDelaySeconds || 30;
     } else if (type === 'question') {
@@ -451,7 +481,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
     const itemCount = options.permissionCount || options.questionCount || options.errorCount || 1;
     
     // Store AI context for context-aware follow-up messages
-    const aiContext = options.aiContext || {};
+    const aiContext: AIContext = options.aiContext || {};
 
     debugLog(`scheduleTTSReminder: scheduling ${type} TTS in ${delaySeconds}s (count=${itemCount})`);
 
@@ -484,7 +514,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
         } else if (type === 'question') {
           reminderMessage = await getQuestionMessage(storedCount, true, storedAiContext);
         } else if (type === 'error') {
-          reminderMessage = await getErrorMessage(storedCount, true, storedAiContext);
+          reminderMessage = await getErrorNotificationMessage(storedCount, true, storedAiContext);
         } else {
           // Pass stored AI context for idle reminders (context-aware AI feature)
           reminderMessage = await getSmartMessage('idle', true, config.idleReminderTTSMessages, storedAiContext);
@@ -543,7 +573,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
               } else if (type === 'question') {
                 followUpMessage = await getQuestionMessage(followUpStoredCount, true, followUpAiContext);
               } else if (type === 'error') {
-                followUpMessage = await getErrorMessage(followUpStoredCount, true, followUpAiContext);
+                followUpMessage = await getErrorNotificationMessage(followUpStoredCount, true, followUpAiContext);
               } else {
                 // Pass stored AI context for idle follow-ups (context-aware AI feature)
                 followUpMessage = await getSmartMessage('idle', true, config.idleReminderTTSMessages, followUpAiContext);
@@ -568,8 +598,8 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
             });
           }
         }
-      } catch (e) {
-        debugLog(`scheduleTTSReminder error: ${e.message}`);
+      } catch (error) {
+        debugLog(`scheduleTTSReminder error: ${getErrorMessage(error)}`);
         pendingReminders.delete(type);
       }
     }, delayMs);
@@ -589,7 +619,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {string} type - 'idle', 'permission', or 'question'
    * @param {object} options - Notification options
    */
-  const smartNotify = async (type, options = {}) => {
+  const smartNotify = async (type: NotificationEventType, options: SmartNotifyOptions = {}): Promise<void> => {
     const {
       soundFile,
       soundLoops = 1,
@@ -629,7 +659,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
     
     // Step 3: If TTS-first mode is enabled, also speak immediately
     if (config.notificationMode === 'tts-first' || config.notificationMode === 'both') {
-      let immediateMessage;
+      let immediateMessage: string;
       if (type === 'permission') {
         immediateMessage = await getSmartMessage('permission', false, config.permissionTTSMessages);
       } else if (type === 'question') {
@@ -645,6 +675,10 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
     }
   };
 
+  void smartNotify;
+
+  void smartNotify;
+
   /**
    * Get a count-aware TTS message for permission requests
    * Uses AI generation when enabled, falls back to static messages
@@ -653,7 +687,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {object} aiContext - Optional context for AI message generation (projectName, sessionTitle, etc.)
    * @returns {Promise<string>} The formatted message
    */
-  const getPermissionMessage = async (count, isReminder = false, aiContext = {}) => {
+  const getPermissionMessage = async (count: number, isReminder = false, aiContext: AIContext = {}): Promise<string> => {
     const messages = isReminder 
       ? config.permissionReminderTTSMessages 
       : config.permissionTTSMessages;
@@ -695,7 +729,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {object} aiContext - Optional context for AI message generation (projectName, sessionTitle, etc.)
    * @returns {Promise<string>} The formatted message
    */
-  const getQuestionMessage = async (count, isReminder = false, aiContext = {}) => {
+  const getQuestionMessage = async (count: number, isReminder = false, aiContext: AIContext = {}): Promise<string> => {
     const messages = isReminder 
       ? config.questionReminderTTSMessages 
       : config.questionTTSMessages;
@@ -737,7 +771,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
    * @param {object} aiContext - Optional context for AI message generation (projectName, sessionTitle, etc.)
    * @returns {Promise<string>} The formatted message
    */
-  const getErrorMessage = async (count, isReminder = false, aiContext = {}) => {
+  const getErrorNotificationMessage = async (count: number, isReminder = false, aiContext: AIContext = {}): Promise<string> => {
     const messages = isReminder 
       ? config.errorReminderTTSMessages 
       : config.errorTTSMessages;
@@ -982,7 +1016,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
   };
 
   return {
-    event: async ({ event }) => {
+    event: async ({ event }: { event: PluginEvent }): Promise<void> => {
       // Reload config on every event to support live configuration changes
       // without requiring a plugin restart.
       config = getTTSConfig();
@@ -1034,7 +1068,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
         // We must only treat NEW user messages (after session.idle) as actual user activity.
         
         if (event.type === "message.updated") {
-          const messageInfo = event.properties?.info;
+          const messageInfo = event.properties?.info as MessageInfo | undefined;
           const messageId = messageInfo?.id;
           const isUserMessage = messageInfo?.role === 'user';
           
@@ -1129,7 +1163,8 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
           }
           
           // Clear idle debounce for this session (allows fresh notifications)
-          const newSessionID = event.properties?.info?.id;
+          const sessionInfo = event.properties?.info as { id?: string } | undefined;
+          const newSessionID = sessionInfo?.id;
           if (newSessionID) {
             lastIdleNotificationTime.delete(newSessionID);
           }
@@ -1177,15 +1212,15 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
           lastIdleNotificationTime.set(sessionID, now);
 
           // Fetch session details for context-aware AI and sub-session filtering
-          let sessionData = null;
+          let sessionData: Session | null = null;
           try {
             const session = await client.session.get({ path: { id: sessionID } });
-            sessionData = session?.data;
+            sessionData = session?.data ?? null;
             if (sessionData?.parentID) {
               debugLog(`session.idle: skipped (sub-session ${sessionID})`);
               return;
             }
-          } catch (e) {}
+          } catch {}
 
           // Build context for AI message generation (used when enableContextAwareAI is true)
           // Note: SDK's Project type doesn't have 'name' property, so we use derivedProjectName
@@ -1286,7 +1321,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
               debugLog(`session.error: skipped (sub-session ${sessionID})`);
               return;
             }
-          } catch (e) {}
+          } catch {}
 
           debugLog(`session.error: notifying for session ${sessionID}`);
           
@@ -1330,7 +1365,7 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
           
           // Step 4: If TTS-first or both mode, generate and speak immediate message
           if (config.notificationMode === 'tts-first' || config.notificationMode === 'both') {
-            const ttsMessage = await getErrorMessage(1, false);
+            const ttsMessage = await getErrorNotificationMessage(1, false);
             await tts.wakeMonitor();
             await tts.forceVolume();
             await tts.speak(ttsMessage, {
@@ -1380,13 +1415,13 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
             clearTimeout(permissionBatchTimeout);
           }
           
-          permissionBatchTimeout = setTimeout(async () => {
-            try {
-              await processPermissionBatch();
-            } catch (e) {
-              debugLog(`processPermissionBatch error: ${e.message}`);
-            }
-          }, PERMISSION_BATCH_WINDOW_MS);
+            permissionBatchTimeout = setTimeout(async () => {
+              try {
+                await processPermissionBatch();
+              } catch (error) {
+                debugLog(`processPermissionBatch error: ${getErrorMessage(error)}`);
+              }
+            }, PERMISSION_BATCH_WINDOW_MS);
           
           debugLog(`${event.type}: batch window reset (will process in ${PERMISSION_BATCH_WINDOW_MS}ms if no more arrive)`);
         }
@@ -1437,8 +1472,8 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
           questionBatchTimeout = setTimeout(async () => {
             try {
               await processQuestionBatch();
-            } catch (e) {
-              debugLog(`processQuestionBatch error: ${e.message}`);
+            } catch (error) {
+              debugLog(`processQuestionBatch error: ${getErrorMessage(error)}`);
             }
           }, QUESTION_BATCH_WINDOW_MS);
           
@@ -1503,8 +1538,8 @@ export default async function SmartVoiceNotifyPlugin({ project, client, $, direc
           cancelPendingReminder('question'); // Cancel question-specific reminder
           debugLog(`Question rejected: ${event.type} - cancelled question reminder`);
         }
-      } catch (e) {
-        debugLog(`event handler error: ${e.message}`);
+      } catch (error) {
+        debugLog(`event handler error: ${getErrorMessage(error)}`);
       }
     },
   };
