@@ -132,6 +132,10 @@ export default async function SmartVoiceNotifyPlugin({
   
   // Map of sessionID -> timestamp of last processed idle notification
   const lastIdleNotificationTime: PluginState['lastIdleNotificationTime'] = new Map<string, number>();
+
+  // Cache session data to reduce repeated session.get API calls.
+  const sessionCache = new Map<string, { data: Session | null; timestamp: number }>();
+  const SESSION_CACHE_TTL = 30000; // 30 seconds TTL
   
   // Debounce window in milliseconds - skip duplicate idle events within this window
   // 5 seconds is long enough to catch rapid duplicates but short enough to allow
@@ -180,6 +184,55 @@ export default async function SmartVoiceNotifyPlugin({
       const timestamp = new Date().toISOString();
       fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
     } catch {}
+  };
+
+  /**
+   * Cleanup expired session cache entries to prevent memory leaks.
+   */
+  const cleanupExpiredSessionCache = (): number => {
+    const now = Date.now();
+    let removedCount = 0;
+
+    for (const [cachedSessionID, entry] of sessionCache.entries()) {
+      if ((now - entry.timestamp) > SESSION_CACHE_TTL) {
+        sessionCache.delete(cachedSessionID);
+        removedCount++;
+      }
+    }
+
+    return removedCount;
+  };
+
+  /**
+   * Get session data from cache when available, otherwise fetch and cache it.
+   */
+  const getSessionDataWithCache = async (
+    sessionID: string,
+    eventType: 'session.idle' | 'session.error',
+  ): Promise<Session | null> => {
+    const now = Date.now();
+    const cleanedEntries = cleanupExpiredSessionCache();
+    if (cleanedEntries > 0) {
+      debugLog(`${eventType}: cleaned ${cleanedEntries} expired session cache entr${cleanedEntries === 1 ? 'y' : 'ies'}`);
+    }
+
+    const cachedEntry = sessionCache.get(sessionID);
+    if (cachedEntry && (now - cachedEntry.timestamp) <= SESSION_CACHE_TTL) {
+      debugLog(`${eventType}: session cache hit for ${sessionID} (age=${now - cachedEntry.timestamp}ms)`);
+      return cachedEntry.data;
+    }
+
+    if (cachedEntry) {
+      debugLog(`${eventType}: session cache stale for ${sessionID} (age=${now - cachedEntry.timestamp}ms, ttl=${SESSION_CACHE_TTL}ms)`);
+    } else {
+      debugLog(`${eventType}: session cache miss for ${sessionID}`);
+    }
+
+    const session = await client.session.get({ path: { id: sessionID } });
+    const sessionData = session?.data ?? null;
+    sessionCache.set(sessionID, { data: sessionData, timestamp: now });
+    debugLog(`${eventType}: cached session details for ${sessionID} (ttl=${SESSION_CACHE_TTL}ms)`);
+    return sessionData;
   };
 
   /**
@@ -1167,6 +1220,14 @@ export default async function SmartVoiceNotifyPlugin({
           const newSessionID = sessionInfo?.id;
           if (newSessionID) {
             lastIdleNotificationTime.delete(newSessionID);
+            if (sessionCache.delete(newSessionID)) {
+              debugLog(`session.created: cleared session cache for ${newSessionID}`);
+            }
+          }
+
+          const removedCacheEntries = cleanupExpiredSessionCache();
+          if (removedCacheEntries > 0) {
+            debugLog(`session.created: cleaned ${removedCacheEntries} expired session cache entr${removedCacheEntries === 1 ? 'y' : 'ies'}`);
           }
           
           // Cleanup old debounce entries to prevent memory leaks (entries older than 1 hour)
@@ -1211,16 +1272,23 @@ export default async function SmartVoiceNotifyPlugin({
           // We set it early to prevent race conditions with concurrent events
           lastIdleNotificationTime.set(sessionID, now);
 
-          // Fetch session details for context-aware AI and sub-session filtering
+          // Fetch session details for context-aware AI and sub-session filtering.
+          // Uses cache first to reduce API calls during repeated idle/error events.
           let sessionData: Session | null = null;
           try {
-            const session = await client.session.get({ path: { id: sessionID } });
-            sessionData = session?.data ?? null;
+            sessionData = await getSessionDataWithCache(sessionID, 'session.idle');
             if (sessionData?.parentID) {
-              debugLog(`session.idle: skipped (sub-session ${sessionID})`);
+              lastIdleNotificationTime.delete(sessionID);
+              sessionCache.delete(sessionID);
+              debugLog(`session.idle: skipped (sub-session ${sessionID}); cleared debounce and cache entry`);
               return;
             }
-          } catch {}
+            debugLog(`session.idle: session lookup passed for ${sessionID} (no parentID)`);
+          } catch (error) {
+            lastIdleNotificationTime.delete(sessionID);
+            debugLog(`session.idle: skipped (session lookup failed for ${sessionID}: ${getErrorMessage(error)}); cleared debounce entry`);
+            return;
+          }
 
           // Build context for AI message generation (used when enableContextAwareAI is true)
           // Note: SDK's Project type doesn't have 'name' property, so we use derivedProjectName
@@ -1314,14 +1382,20 @@ export default async function SmartVoiceNotifyPlugin({
             return;
           }
 
-          // Skip sub-sessions (child sessions spawned for parallel operations)
+          // Skip sub-sessions (child sessions spawned for parallel operations).
+          // Uses cache first to reduce API calls during repeated idle/error events.
           try {
-            const session = await client.session.get({ path: { id: sessionID } });
-            if (session?.data?.parentID) {
+            const sessionData = await getSessionDataWithCache(sessionID, 'session.error');
+            if (sessionData?.parentID) {
+              sessionCache.delete(sessionID);
               debugLog(`session.error: skipped (sub-session ${sessionID})`);
               return;
             }
-          } catch {}
+            debugLog(`session.error: session lookup passed for ${sessionID} (no parentID)`);
+          } catch (error) {
+            debugLog(`session.error: skipped (session lookup failed for ${sessionID}: ${getErrorMessage(error)})`);
+            return;
+          }
 
           debugLog(`session.error: notifying for session ${sessionID}`);
           
