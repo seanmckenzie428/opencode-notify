@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Setup Infrastructure Smoke Test
  * 

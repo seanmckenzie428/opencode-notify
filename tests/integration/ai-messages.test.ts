@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { test, describe, expect, beforeAll, afterAll } from 'bun:test';
-import { generateAIMessage, testAIConnection } from '../../util/ai-messages.js';
+import { generateAIMessage, testAIConnection } from '../../src/util/ai-messages.js';
 import { createTestTempDir, cleanupTestTempDir, createTestConfig } from '../setup.js';
 
 const hasAIEndpoint = !!process.env.TEST_AI_ENDPOINT && process.env.TEST_AI_ENDPOINT !== 'http://127.0.0.1:8000/v1';

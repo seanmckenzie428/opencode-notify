@@ -1,7 +1,8 @@
+// @ts-nocheck
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
-import { loadConfig, parseJSONC } from '../../util/config.js';
+import { loadConfig, parseJSONC } from '../../src/util/config.js';
 import { 
   createTestTempDir, 
   cleanupTestTempDir, 

@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { generateAIMessage, getSmartMessage, testAIConnection } from '../../util/ai-messages.js';
+import { generateAIMessage, getSmartMessage, testAIConnection } from '../../src/util/ai-messages.js';
 import { createTestTempDir, cleanupTestTempDir, createTestConfig } from '../setup.js';
 
 describe('AI Message Generation Module', () => {

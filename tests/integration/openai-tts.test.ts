@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { test, describe, expect, beforeAll, afterAll } from 'bun:test';
-import { createTTS } from '../../util/tts.js';
+import { createTTS } from '../../src/util/tts.js';
 import { createMockShellRunner, createMockClient, createTestTempDir, cleanupTestTempDir, createTestConfig } from '../setup.js';
 
 const hasOpenAIEndpoint = !!process.env.TEST_OPENAI_TTS_ENDPOINT && process.env.TEST_OPENAI_TTS_ENDPOINT !== 'https://api.example.com';

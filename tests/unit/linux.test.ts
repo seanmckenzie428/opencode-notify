@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
-import { createLinuxPlatform } from '../../util/linux.js';
+import { createLinuxPlatform } from '../../src/util/linux.js';
 import { createMockShellRunner } from '../setup.js';
 
 describe('Linux Platform Compatibility', () => {

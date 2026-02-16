@@ -1,6 +1,7 @@
+// @ts-nocheck
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import path from 'path';
-import { getProjectSound, clearProjectSoundCache } from '../../util/per-project-sound.js';
+import { getProjectSound, clearProjectSoundCache } from '../../src/util/per-project-sound.js';
 import { createTestTempDir, cleanupTestTempDir } from '../setup.js';
 
 describe('Per-Project Sound Module', () => {

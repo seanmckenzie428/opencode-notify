@@ -1,10 +1,11 @@
+// @ts-nocheck
 /**
  * Unit Tests for Configuration Module
  * 
  * Tests for util/config.js configuration loading and merging functionality.
  * Focuses on Task 1.7: Testing new desktop notification config fields.
  * 
- * @see util/config.js
+ * @see src/util/config.js
  * @see docs/ARCHITECT_PLAN.md - Phase 1, Task 1.7
  */
 
@@ -33,7 +34,7 @@ describe('config module', () => {
     createTestAssets();
     
     // Fresh import of the module (loadConfig uses OPENCODE_CONFIG_DIR env var)
-    const module = await import('../../util/config.js');
+    const module = await import('../../src/util/config.js');
     loadConfig = module.loadConfig;
     parseJSONC = module.parseJSONC;
     deepMerge = module.deepMerge;

@@ -1,7 +1,8 @@
+// @ts-nocheck
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
-import SmartVoiceNotifyPlugin from '../../index.js';
+import SmartVoiceNotifyPlugin from '../../src/index.js';
 import { 
   createTestTempDir, 
   cleanupTestTempDir, 

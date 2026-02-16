@@ -1,10 +1,11 @@
+// @ts-nocheck
 /**
  * Unit Tests for Desktop Notification Module
  * 
  * Tests for util/desktop-notify.js cross-platform desktop notification functionality.
  * Uses mocked node-notifier to avoid actual notifications during tests.
  * 
- * @see util/desktop-notify.js
+ * @see src/util/desktop-notify.js
  * @see docs/ARCHITECT_PLAN.md - Phase 1, Task 1.6
  */
 
@@ -58,7 +59,7 @@ describe('desktop-notify module', () => {
     createTestLogsDir();
     
     // Fresh import of the module
-    const module = await import('../../util/desktop-notify.js');
+    const module = await import('../../src/util/desktop-notify.js');
     desktopNotify = module.default;
     sendDesktopNotification = module.sendDesktopNotification;
     notifyTaskComplete = module.notifyTaskComplete;

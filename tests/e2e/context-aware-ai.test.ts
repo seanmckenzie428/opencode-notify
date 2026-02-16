@@ -1,8 +1,9 @@
+// @ts-nocheck
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
-import SmartVoiceNotifyPlugin from '../../index.js';
-import { generateAIMessage } from '../../util/ai-messages.js';
+import SmartVoiceNotifyPlugin from '../../src/index.js';
+import { generateAIMessage } from '../../src/util/ai-messages.js';
 import { 
   createTestTempDir, 
   cleanupTestTempDir, 

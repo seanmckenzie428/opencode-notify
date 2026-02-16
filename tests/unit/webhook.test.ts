@@ -1,9 +1,10 @@
+// @ts-nocheck
 /**
  * Unit Tests for Webhook Integration Module
  * 
  * Tests for util/webhook.js Discord webhook integration.
  * 
- * @see util/webhook.js
+ * @see src/util/webhook.js
  * @see docs/ARCHITECT_PLAN.md - Phase 4, Task 4.5
  */
 
@@ -24,7 +25,7 @@ describe('webhook module', () => {
     createTestLogsDir();
     
     // Fresh import
-    const module = await import('../../util/webhook.js');
+    const module = await import('../../src/util/webhook.js');
     webhook = module.default;
     // Reset rate limit state for each test
     module.resetRateLimitState();

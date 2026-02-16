@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import path from 'path';
 import fs from 'fs';
@@ -35,7 +36,7 @@ mock.module('msedge-tts', () => ({
   }
 }));
 
-import { getTTSConfig, createTTS } from '../../util/tts.js';
+import { getTTSConfig, createTTS } from '../../src/util/tts.js';
 import { 
   createTestTempDir, 
   cleanupTestTempDir, 

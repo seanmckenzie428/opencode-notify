@@ -1,9 +1,10 @@
+// @ts-nocheck
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { createTestTempDir, cleanupTestTempDir } from '../setup.js';
-import { listSoundsInTheme, pickThemeSound, pickRandomSound } from '../../util/sound-theme.js';
+import { listSoundsInTheme, pickThemeSound, pickRandomSound } from '../../src/util/sound-theme.js';
 
 describe('Sound Theme Module', () => {
   let tempDir;

@@ -1,10 +1,11 @@
+// @ts-nocheck
 /**
  * Unit Tests for Focus Detection Module
  * 
  * Tests for the util/focus-detect.js module which provides terminal focus detection.
  * Used to suppress notifications when the user is actively looking at the terminal.
  * 
- * @see util/focus-detect.js
+ * @see src/util/focus-detect.js
  * @see docs/ARCHITECT_PLAN.md - Phase 3, Task 3.6
  */
 
@@ -28,9 +29,9 @@ import {
   resetTerminalDetection,
   getCacheState,
   KNOWN_TERMINALS_MACOS
-} from '../../util/focus-detect.js';
+} from '../../src/util/focus-detect.js';
 
-import focusDetect from '../../util/focus-detect.js';
+import focusDetect from '../../src/util/focus-detect.js';
 
 describe('focus detection module', () => {
   beforeEach(() => {

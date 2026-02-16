@@ -1,10 +1,11 @@
+// @ts-nocheck
 /**
  * Unit Tests for Error Handler Functionality
  * 
  * Tests for the session.error event handling and getErrorMessage() helper function.
  * These tests verify error notifications work correctly in the plugin.
  * 
- * @see index.js - session.error event handler and getErrorMessage()
+ * @see src/index.ts - session.error event handler and getErrorMessage()
  * @see docs/ARCHITECT_PLAN.md - Phase 2, Task 2.5
  */
 
@@ -64,7 +65,7 @@ describe('error handler functionality', () => {
     });
     
     // Fresh import of config module
-    const configModule = await import('../../util/config.js');
+    const configModule = await import('../../src/util/config.js');
     loadConfig = configModule.loadConfig;
     config = loadConfig('smart-voice-notify');
   });
@@ -371,7 +372,7 @@ describe('error handler functionality', () => {
     let notifyError;
     
     beforeEach(async () => {
-      const module = await import('../../util/desktop-notify.js');
+      const module = await import('../../src/util/desktop-notify.js');
       notifyError = module.notifyError;
     });
     
@@ -551,7 +552,7 @@ describe('error handler functionality', () => {
       createTestAssets();
       
       // Don't create custom config - let defaults load
-      const module = await import('../../util/config.js');
+      const module = await import('../../src/util/config.js');
       loadConfig = module.loadConfig;
       defaultConfig = loadConfig('smart-voice-notify');
     });
