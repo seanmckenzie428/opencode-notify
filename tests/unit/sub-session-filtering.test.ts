@@ -10,7 +10,7 @@
  * Key behaviors under test:
  * - Main sessions (parentID null) SHOULD trigger notifications
  * - Sub-sessions (parentID set) SHOULD NOT trigger notifications
- * - API call failures SHOULD NOT trigger notifications (fail-safe)
+ * - API call failures SHOULD trigger fallback notifications with generic messages
  * - Debounce entries are cleared when a sub-session or API error is detected
  *
  * @see src/index.ts - session.idle handler (lines ~1189-1303)
@@ -165,10 +165,10 @@ describe('Sub-Session Filtering', () => {
     });
 
     // --------------------------------------------------------
-    // API call fails -> fail-safe: skip notification
+    // API call fails -> fallback: send generic notification
     // --------------------------------------------------------
 
-    test('should NOT trigger notification when session.get API call throws', async () => {
+    test('should trigger fallback notification when session.get API call throws', async () => {
       // Arrange - override session.get to throw
       const sessionId = 'api-fail-session';
       mockClient.session.get = async () => {
@@ -179,9 +179,10 @@ describe('Sub-Session Filtering', () => {
       // Act
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
 
-      // Assert - no toast, no sound (fail-safe)
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
-      expect(mockShell.getCallCount()).toBe(0);
+      // Assert - fallback notification sent (generic message, no session context)
+      const toastCalls = mockClient.tui.getToastCalls();
+      expect(toastCalls.length).toBe(1);
+      expect(toastCalls[0].message).toContain('Agent has finished');
     });
 
     test('should NOT trigger notification when session.get returns undefined data', async () => {
@@ -258,18 +259,19 @@ describe('Sub-Session Filtering', () => {
       };
       const plugin = await initPlugin();
 
-      // Act 1: fire idle -> API fails, debounce entry cleared
+      // Act 1: fire idle -> API fails, fallback notification sent, debounce entry cleared
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
 
-      // Verify no notification (API failed = fail-safe skip)
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
+      // Verify fallback notification sent (API failed = fallback with generic message)
+      expect(mockClient.tui.getToastCalls().length).toBe(1);
+      expect(mockClient.tui.getToastCalls()[0].message).toContain('Agent has finished');
 
       // Act 2: fire idle again -> API succeeds, main session
       // If debounce was NOT cleared, this would be debounced and skipped.
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
 
-      // Assert - notification triggered (debounce was cleared by API failure)
-      expect(mockClient.tui.getToastCalls().length).toBe(1);
+      // Assert - second notification triggered (debounce was cleared by API failure)
+      expect(mockClient.tui.getToastCalls().length).toBe(2);
     });
 
     // --------------------------------------------------------
@@ -418,10 +420,10 @@ describe('Sub-Session Filtering', () => {
     });
 
     // --------------------------------------------------------
-    // API call fails -> fail-safe: skip notification
+    // API call fails -> fallback: send generic notification
     // --------------------------------------------------------
 
-    test('should NOT trigger notification when session.get throws for error event', async () => {
+    test('should trigger fallback notification when session.get throws for error event', async () => {
       // Arrange - override session.get to throw
       const sessionId = 'api-fail-error-session';
       mockClient.session.get = async () => {
@@ -432,12 +434,14 @@ describe('Sub-Session Filtering', () => {
       // Act
       await plugin.event({ event: mockEvents.sessionError(sessionId) });
 
-      // Assert - no toast, no sound (fail-safe)
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
-      expect(mockShell.getCallCount()).toBe(0);
+      // Assert - fallback notification sent (generic error message)
+      const toastCalls = mockClient.tui.getToastCalls();
+      expect(toastCalls.length).toBe(1);
+      expect(toastCalls[0].message).toContain('error');
+      expect(toastCalls[0].variant).toBe('error');
     });
 
-    test('should NOT trigger notification when session.get throws TypeError', async () => {
+    test('should trigger fallback notification when session.get throws TypeError', async () => {
       // Arrange - simulate a different type of API error
       const sessionId = 'api-typeerror-session';
       mockClient.session.get = async () => {
@@ -448,9 +452,11 @@ describe('Sub-Session Filtering', () => {
       // Act
       await plugin.event({ event: mockEvents.sessionError(sessionId) });
 
-      // Assert
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
-      expect(mockShell.getCallCount()).toBe(0);
+      // Assert - fallback notification sent
+      const toastCalls = mockClient.tui.getToastCalls();
+      expect(toastCalls.length).toBe(1);
+      expect(toastCalls[0].message).toContain('error');
+      expect(toastCalls[0].variant).toBe('error');
     });
 
     // --------------------------------------------------------
@@ -540,15 +546,15 @@ describe('Sub-Session Filtering', () => {
       };
       const plugin = await initPlugin();
 
-      // Act 1: idle fires -> API fails, skipped
+      // Act 1: idle fires -> API fails, fallback notification sent
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
+      expect(mockClient.tui.getToastCalls().length).toBe(1);
 
       // Act 2: error fires -> API succeeds, main session
       await plugin.event({ event: mockEvents.sessionError(sessionId) });
 
-      // Assert - error notification was sent
-      expect(mockClient.tui.getToastCalls().length).toBe(1);
+      // Assert - error notification was also sent (2 total: fallback idle + normal error)
+      expect(mockClient.tui.getToastCalls().length).toBe(2);
     });
 
     test('multiple sub-sessions should all be silently filtered', async () => {
@@ -768,9 +774,10 @@ describe('Sub-Session Filtering', () => {
       // Act - should not crash
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
 
-      // Assert - fail-safe: no notification
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
-      expect(mockShell.getCallCount()).toBe(0);
+      // Assert - fallback notification sent (graceful handling of non-Error)
+      const toastCalls = mockClient.tui.getToastCalls();
+      expect(toastCalls.length).toBe(1);
+      expect(toastCalls[0].message).toContain('Agent has finished');
     });
 
     test('session.get rejecting with undefined should be handled', async () => {
@@ -784,8 +791,11 @@ describe('Sub-Session Filtering', () => {
       // Act
       await plugin.event({ event: mockEvents.sessionError(sessionId) });
 
-      // Assert - fail-safe: no notification
-      expect(mockClient.tui.getToastCalls().length).toBe(0);
+      // Assert - fallback notification sent (graceful handling of undefined rejection)
+      const toastCalls = mockClient.tui.getToastCalls();
+      expect(toastCalls.length).toBe(1);
+      expect(toastCalls[0].message).toContain('error');
+      expect(toastCalls[0].variant).toBe('error');
     });
   });
 });

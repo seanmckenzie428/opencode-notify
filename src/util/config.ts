@@ -295,7 +295,7 @@ export const getDefaultConfigObject = (): PluginConfig => ({
   enableDesktopNotification: true,
   desktopNotificationTimeout: 5,
   showProjectInNotification: true,
-  suppressWhenFocused: true,
+  suppressWhenFocused: false,
   alwaysNotify: false,
   enableWebhook: false,
   webhookUrl: '',
@@ -855,7 +855,8 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     
     // Suppress sound and desktop notifications when terminal is focused
     // TTS reminders are still allowed (user might step away after task completes)
-    "suppressWhenFocused": ${overrides.suppressWhenFocused !== undefined ? overrides.suppressWhenFocused : true},
+    // Default: false (disabled) - focus detection is opt-in
+    "suppressWhenFocused": ${overrides.suppressWhenFocused !== undefined ? overrides.suppressWhenFocused : false},
     
     // Override focus detection: always send notifications even when terminal is focused
     // Set to true to disable focus-based suppression entirely

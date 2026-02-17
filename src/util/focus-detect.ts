@@ -123,24 +123,6 @@ export const KNOWN_TERMINALS_MACOS = [
   'Warp',
   'Rio',
   'Ghostty',
-  // VS Code and other IDEs with integrated terminals
-  'Code',
-  'Visual Studio Code',
-  'VSCodium',
-  'Cursor',
-  'Windsurf',
-  'Zed',
-  // JetBrains IDEs
-  'IntelliJ IDEA',
-  'WebStorm',
-  'PyCharm',
-  'PhpStorm',
-  'GoLand',
-  'RubyMine',
-  'CLion',
-  'DataGrip',
-  'Rider',
-  'Android Studio',
 ] as const;
 
 /**
