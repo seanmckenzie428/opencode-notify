@@ -451,7 +451,7 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // ============================================================
     // 'openai'     - OpenAI-compatible TTS (Self-hosted/Cloud, e.g. Kokoro, LocalAI)
     // 'elevenlabs' - Best quality, anime-like voices (requires API key, free tier: 10k chars/month)
-    // 'edge'       - Good quality neural voices (free, requires: pip install edge-tts)
+    // 'edge'       - Good quality neural voices (Python edge-tts CLI RECOMMENDED, with msedge-tts npm fallback)
     // 'sapi'       - Windows built-in voices (free, offline, robotic)
     "ttsEngine": "${overrides.ttsEngine || 'elevenlabs'}",
     
@@ -487,9 +487,10 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     "elevenLabsStyle": ${overrides.elevenLabsStyle !== undefined ? overrides.elevenLabsStyle : 0.5},           // Style exaggeration (higher = more expressive)
     
     // ============================================================
-    // EDGE TTS SETTINGS (Free Neural Voices - Default Engine)
+    // EDGE TTS SETTINGS (Free Neural Voices)
     // ============================================================
-    // Requires: pip install edge-tts
+    // Uses Python edge-tts CLI (RECOMMENDED, pip install edge-tts) with automatic
+    // fallback to msedge-tts npm package if Python is not available.
     
     // Voice options (run 'edge-tts --list-voices' to see all):
     //   'en-US-AnaNeural'   - Young, cute, cartoon-like (RECOMMENDED)
@@ -841,21 +842,10 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // ============================================================
     // FOCUS DETECTION SETTINGS
     // ============================================================
-    // Suppress notifications when you're actively looking at the terminal.
-    // This prevents notifications from interrupting you when you're already
-    // paying attention to the OpenCode terminal.
-    //
-    // PLATFORM SUPPORT:
-    //   macOS:   Full support - Uses AppleScript to detect frontmost application
-    //   Windows: Not supported - No reliable API available
-    //   Linux:   Not supported - Varies by desktop environment
-    //
-    // When focus detection is not supported on your platform, notifications
-    // will always be sent (fail-open behavior).
-    
-    // Suppress sound and desktop notifications when terminal is focused
-    // TTS reminders are still allowed (user might step away after task completes)
-    // Default: false (disabled) - focus detection is opt-in
+    // Suppress sound/desktop notifications when terminal window is focused.
+    // Cross-platform: Windows, macOS, and Linux (X11 via xdotool/xprop, Wayland via gdbus).
+    // Default: false (notifications always play regardless of focus)
+    // Set to true to avoid notification spam when actively working in terminal
     "suppressWhenFocused": ${overrides.suppressWhenFocused !== undefined ? overrides.suppressWhenFocused : false},
     
     // Override focus detection: always send notifications even when terminal is focused
