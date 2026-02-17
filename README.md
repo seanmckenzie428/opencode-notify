@@ -57,7 +57,7 @@ The plugin automatically tries multiple TTS engines in order, falling back if on
 ### System Integration
 - **Native Desktop Notifications**: Windows (Toast), macOS (Notification Center), and Linux (notify-send) support
 - **Native Edge TTS**: No external dependencies (Python/pip) required
-- **Focus Detection** (macOS): Suppresses notifications when terminal is focused
+- **Focus Detection** (Cross-platform): Suppresses notifications when terminal is focused (Windows, macOS, Linux)
 - **Webhook Integration**: Receive notifications on Discord or any custom webhook endpoint when tasks finish or need attention
 - **Themed Sound Packs**: Use custom sound collections (e.g., Warcraft, StarCraft) by simply pointing to a directory
 - **Per-Project Sounds**: Assign unique sounds to different projects for easy identification
@@ -155,8 +155,9 @@ If you prefer to create the config manually, add a `smart-voice-notify.jsonc` fi
     "ttsReminderDelaySeconds": 30,
     "enableFollowUpReminders": true,
     
-    // Focus Detection (macOS only)
-    "suppressWhenFocused": true,
+    // Focus Detection (suppress notifications when terminal is focused)
+    // Default: false (notifications always play)
+    "suppressWhenFocused": false,
     "alwaysNotify": false,
 
     // AI-generated messages (optional - requires local AI server)
@@ -325,7 +326,7 @@ You can replace individual sound files with entire "Sound Themes" (like the clas
 | **TTS (Windows SAPI)** | ✅ | ❌ | ❌ |
 | **TTS (macOS Say)** | ❌ | ✅ | ❌ |
 | **Desktop Notifications** | ✅ | ✅ | ✅ (req libnotify) |
-| **Focus Detection** | ❌ | ✅ | ❌ |
+| **Focus Detection** | ✅ | ✅ | ✅ |
 | **Webhook Integration** | ✅ | ✅ | ✅ |
 | **Wake Monitor** | ✅ | ✅ | ✅ (X11/Gnome) |
 | **Volume Control** | ✅ | ✅ | ✅ (Pulse/ALSA) |
@@ -373,15 +374,15 @@ You can replace individual sound files with entire "Sound Themes" (like the clas
 - **Linux**: `paplay` or `aplay`
 
 ### For Focus Detection
-Focus detection suppresses sound and desktop notifications when the terminal is focused.
+Focus detection suppresses sound and desktop notifications when the terminal is focused. Also detects minimized or hidden terminal windows.
 
 | Platform | Support | Notes |
 |----------|---------|-------|
 | **macOS** | ✅ Full | Uses AppleScript to detect frontmost application |
-| **Windows** | ❌ Not supported | No reliable API available |
-| **Linux** | ❌ Not supported | Varies by desktop environment |
+| **Windows** | ✅ Full | Uses native window focus and visibility detection |
+| **Linux** | ✅ Full | Uses `xdotool` / `xprop` (X11) or `gdbus` (Wayland) |
 
-> **Note**: On unsupported platforms, notifications are always sent (fail-open behavior). TTS reminders are never suppressed, even when focused, since users may step away after seeing the toast.
+> **Note**: If focus detection fails on any platform, notifications are still sent (fail-open behavior). TTS reminders are never suppressed, even when focused, since users may step away after seeing the toast.
 
 ### For Webhook Notifications
 - **Discord**: Full support for Discord's webhook embed format.
@@ -555,7 +556,7 @@ When a user asks you to set up this plugin, follow these steps:
 ### Platform-Specific Notes
 
 - **Windows**: All features supported, SAPI as offline fallback
-- **macOS**: Focus detection available, `say` command as offline fallback
+- **macOS**: `say` command as offline fallback
 - **Linux**: Requires `libnotify-bin` for desktop notifications, no offline TTS fallback
 
 ### TTS Fallback Chain
