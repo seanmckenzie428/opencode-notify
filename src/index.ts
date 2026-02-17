@@ -1275,6 +1275,7 @@ export default async function SmartVoiceNotifyPlugin({
           // Fetch session details for context-aware AI and sub-session filtering.
           // Uses cache first to reduce API calls during repeated idle/error events.
           let sessionData: Session | null = null;
+          let usedIdleSessionFallback = false;
           try {
             sessionData = await getSessionDataWithCache(sessionID, 'session.idle');
             if (sessionData?.parentID) {
@@ -1286,8 +1287,9 @@ export default async function SmartVoiceNotifyPlugin({
             debugLog(`session.idle: session lookup passed for ${sessionID} (no parentID)`);
           } catch (error) {
             lastIdleNotificationTime.delete(sessionID);
-            debugLog(`session.idle: skipped (session lookup failed for ${sessionID}: ${getErrorMessage(error)}); cleared debounce entry`);
-            return;
+            sessionCache.delete(sessionID);
+            usedIdleSessionFallback = true;
+            debugLog(`session.idle: session lookup failed for ${sessionID}: ${getErrorMessage(error)}; using fallback notification flow with generic context`);
           }
 
           // Build context for AI message generation (used when enableContextAwareAI is true)
@@ -1315,14 +1317,17 @@ export default async function SmartVoiceNotifyPlugin({
           showToast("✅ Agent has finished working", "success", 5000);  // No await - instant display
           
           // Step 1b: Send desktop notification (only if not suppressed)
-      if (!suppressIdle) {
-        sendDesktopNotify('idle', 'Agent has finished working. Your code is ready for review.');
-      } else {
-        debugLog('session.idle: desktop notification suppressed (terminal focused)');
-      }
+          const idleDesktopMessage = usedIdleSessionFallback
+            ? 'Agent has finished working'
+            : 'Agent has finished working. Your code is ready for review.';
+          if (!suppressIdle) {
+            sendDesktopNotify('idle', idleDesktopMessage);
+          } else {
+            debugLog('session.idle: desktop notification suppressed (terminal focused)');
+          }
 
-      // Step 1c: Send webhook notification
-      sendWebhookNotify('idle', 'Agent has finished working. Your code is ready for review.', { sessionId: sessionID });
+          // Step 1c: Send webhook notification
+          sendWebhookNotify('idle', idleDesktopMessage, { sessionId: sessionID });
           
           // Step 2: Play sound (only if not suppressed)
           // Only play sound in sound-first, sound-only, or both mode
@@ -1347,13 +1352,18 @@ export default async function SmartVoiceNotifyPlugin({
           if (config.enableTTSReminder && config.notificationMode !== 'sound-only') {
             scheduleTTSReminder('idle', null, {
               fallbackSound: config.idleSound,
-              aiContext  // Pass context for reminder message generation
+              aiContext: usedIdleSessionFallback ? {} : aiContext
             });
           }
           
           // Step 5: If TTS-first or both mode, generate and speak immediate message
           if (config.notificationMode === 'tts-first' || config.notificationMode === 'both') {
-            const ttsMessage = await getSmartMessage('idle', false, config.idleTTSMessages, aiContext);
+            const ttsMessage = await getSmartMessage(
+              'idle',
+              false,
+              config.idleTTSMessages,
+              usedIdleSessionFallback ? {} : aiContext,
+            );
             await tts.wakeMonitor();
             await tts.forceVolume();
             await tts.speak(ttsMessage, {
@@ -1384,6 +1394,7 @@ export default async function SmartVoiceNotifyPlugin({
 
           // Skip sub-sessions (child sessions spawned for parallel operations).
           // Uses cache first to reduce API calls during repeated idle/error events.
+          let usedErrorSessionFallback = false;
           try {
             const sessionData = await getSessionDataWithCache(sessionID, 'session.error');
             if (sessionData?.parentID) {
@@ -1393,8 +1404,9 @@ export default async function SmartVoiceNotifyPlugin({
             }
             debugLog(`session.error: session lookup passed for ${sessionID} (no parentID)`);
           } catch (error) {
-            debugLog(`session.error: skipped (session lookup failed for ${sessionID}: ${getErrorMessage(error)})`);
-            return;
+            sessionCache.delete(sessionID);
+            usedErrorSessionFallback = true;
+            debugLog(`session.error: session lookup failed for ${sessionID}: ${getErrorMessage(error)}; using fallback notification flow`);
           }
 
           debugLog(`session.error: notifying for session ${sessionID}`);
@@ -1407,14 +1419,17 @@ export default async function SmartVoiceNotifyPlugin({
           showToast("❌ Agent encountered an error", "error", 8000);  // No await - instant display
           
           // Step 1b: Send desktop notification (only if not suppressed)
+          const errorDesktopMessage = usedErrorSessionFallback
+            ? 'Agent encountered an error'
+            : 'The agent encountered an error and needs your attention.';
           if (!suppressError) {
-            sendDesktopNotify('error', 'The agent encountered an error and needs your attention.');
+            sendDesktopNotify('error', errorDesktopMessage);
           } else {
             debugLog('session.error: desktop notification suppressed (terminal focused)');
           }
 
           // Step 1c: Send webhook notification
-          sendWebhookNotify('error', 'The agent encountered an error and needs your attention.', { sessionId: sessionID });
+          sendWebhookNotify('error', errorDesktopMessage, { sessionId: sessionID });
           
           // Step 2: Play sound (only if not suppressed)
           // Only play sound in sound-first, sound-only, or both mode
