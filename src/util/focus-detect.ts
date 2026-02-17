@@ -5,6 +5,7 @@ import path from 'path';
 import detectTerminal from 'detect-terminal';
 import { promisify } from 'util';
 
+import { createLinuxPlatform } from './linux.js';
 import type { ShellRunner } from '../types/opencode-sdk.js';
 
 /**
@@ -15,8 +16,8 @@ import type { ShellRunner } from '../types/opencode-sdk.js';
  *
  * Platform support:
  * - macOS: Full support using AppleScript to check frontmost app
- * - Windows: Not supported (returns false - no reliable API)
- * - Linux: Not supported (returns false - varies by desktop environment)
+ * - Windows: Full support using PowerShell + Get-Process
+ * - Linux: X11 (xdotool/xprop) and Wayland (Sway/GNOME/KDE)
  *
  * @module util/focus-detect
  * @see docs/ARCHITECT_PLAN.md - Phase 3, Task 3.2
@@ -49,6 +50,40 @@ const getErrorMessage = (error: unknown): string => {
 };
 
 const execAsync = promisify(exec) as ExecAsync;
+
+const toUtf8Text = (value: Buffer | Uint8Array | string | null | undefined): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (!value) {
+    return '';
+  }
+
+  return Buffer.from(value).toString('utf8');
+};
+
+const executeCommand = async (
+  command: string,
+  options: ExecOptionsWithStringEncoding,
+  shellRunner?: ShellRunner,
+): Promise<{ stdout: string; stderr: string }> => {
+  if (!shellRunner) {
+    return execAsync(command, options);
+  }
+
+  const execution = shellRunner`${command}`.quiet().nothrow();
+  if (typeof execution.timeout === 'function') {
+    execution.timeout(typeof options.timeout === 'number' ? options.timeout : 2000);
+  }
+
+  const shellResult = await execution;
+
+  return {
+    stdout: toUtf8Text(shellResult.stdout),
+    stderr: toUtf8Text(shellResult.stderr),
+  };
+};
 
 // ========================================
 // CACHING CONFIGURATION
@@ -108,6 +143,65 @@ export const KNOWN_TERMINALS_MACOS = [
   'Android Studio',
 ] as const;
 
+/**
+ * List of known terminal application names and process names for Windows.
+ * These are matched against the focused process name from PowerShell.
+ */
+export const KNOWN_TERMINALS_WINDOWS = [
+  'Windows Terminal',
+  'WindowsTerminal',
+  'cmd',
+  'cmd.exe',
+  'Command Prompt',
+  'PowerShell',
+  'powershell',
+  'pwsh',
+  'conhost',
+  'Alacritty',
+  'kitty',
+  'WezTerm',
+  'Hyper',
+  'Tabby',
+  'Warp',
+  'Rio',
+  'Ghostty',
+  // Unix-like shells on Windows
+  'Git Bash',
+  'bash',
+  'MINGW64',
+  'Cygwin',
+  'MSYS2',
+] as const;
+
+/**
+ * List of known terminal application names and window classes for Linux.
+ */
+export const KNOWN_TERMINALS_LINUX = [
+  'gnome-terminal',
+  'gnome terminal',
+  'gnome-terminal-server',
+  'konsole',
+  'xfce4-terminal',
+  'mate-terminal',
+  'lxterminal',
+  'terminator',
+  'tilix',
+  'terminology',
+  'kitty',
+  'alacritty',
+  'wezterm',
+  'hyper',
+  'tabby',
+  'warp',
+  'rio',
+  'ghostty',
+  'foot',
+  'xterm',
+  'urxvt',
+  'rxvt',
+  'st',
+] as const;
+
 // ========================================
 // DEBUG LOGGING
 // ========================================
@@ -160,12 +254,9 @@ export const isFocusDetectionSupported = (): FocusDetectionSupport => {
     case 'darwin':
       return { supported: true };
     case 'win32':
-      return { supported: false, reason: 'Windows focus detection not supported - no reliable API' };
+      return { supported: true };
     case 'linux':
-      return {
-        supported: false,
-        reason: 'Linux focus detection not supported - varies by desktop environment',
-      };
+      return { supported: true };
     default:
       return { supported: false, reason: `Unsupported platform: ${platform}` };
   }
@@ -220,18 +311,59 @@ end tell
 `;
 
 /**
+ * PowerShell script to get the frontmost process on Windows.
+ * Uses user32.dll to get foreground window handle, then Get-Process by PID.
+ */
+const POWERSHELL_GET_FRONTMOST_PROCESS = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class Win32FocusDetect {
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetForegroundWindow();
+
+  [DllImport("user32.dll")]
+  public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+}
+"@
+
+$processId = 0
+$foregroundWindow = [Win32FocusDetect]::GetForegroundWindow()
+
+# No foreground window (e.g., showing desktop)
+if ($foregroundWindow -eq [IntPtr]::Zero) {
+  return
+}
+
+[Win32FocusDetect]::GetWindowThreadProcessId($foregroundWindow, [ref]$processId) | Out-Null
+if ($processId -le 0) {
+  return
+}
+
+Get-Process -Id $processId | Select-Object -ExpandProperty ProcessName
+`;
+
+const getEncodedPowerShellScript = (script: string): string =>
+  Buffer.from(script, 'utf16le').toString('base64');
+
+/**
  * Get the name of the frontmost application on macOS.
  *
  * @param debug - Enable debug logging
  * @returns Frontmost app name or null on error
  */
-const getFrontmostAppMacOS = async (debug = false): Promise<string | null> => {
+const getFrontmostAppMacOS = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
   try {
-    const { stdout } = await execAsync(`osascript -e '${APPLESCRIPT_GET_FRONTMOST}'`, {
-      encoding: 'utf8',
-      timeout: 2000, // 2 second timeout
-      maxBuffer: 1024, // Small buffer - we only expect app name
-    });
+    const { stdout } = await executeCommand(
+      `osascript -e '${APPLESCRIPT_GET_FRONTMOST}'`,
+      {
+        encoding: 'utf8',
+        timeout: 2000, // 2 second timeout
+        maxBuffer: 1024, // Small buffer - we only expect app name
+      },
+      shellRunner,
+    );
 
     const appName = stdout.trim();
     debugLog(`Frontmost app: "${appName}"`, debug);
@@ -243,32 +375,433 @@ const getFrontmostAppMacOS = async (debug = false): Promise<string | null> => {
 };
 
 /**
+ * Get the focused process name on Windows via PowerShell.
+ *
+ * @param debug - Enable debug logging
+ * @param shellRunner - Optional shell runner override for testing
+ * @returns Focused process name or null on error
+ */
+const getFrontmostAppWindows = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  try {
+    const encodedScript = getEncodedPowerShellScript(POWERSHELL_GET_FRONTMOST_PROCESS);
+    const command =
+      `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedScript}`;
+
+    const { stdout, stderr } = await executeCommand(
+      command,
+      {
+        encoding: 'utf8',
+        timeout: 2000,
+        maxBuffer: 1024,
+      },
+      shellRunner,
+    );
+
+    if (stderr.trim()) {
+      debugLog(`PowerShell stderr: ${stderr.trim()}`, debug);
+    }
+
+    const processName = stdout.trim();
+    if (!processName) {
+      debugLog('PowerShell returned empty focused process name', debug);
+      return null;
+    }
+
+    debugLog(`Frontmost process: "${processName}"`, debug);
+    return processName;
+  } catch (error) {
+    debugLog(`Failed to get frontmost Windows process: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+const getLinuxSessionType = (): 'x11' | 'wayland' | 'tty' | 'unknown' => {
+  try {
+    return createLinuxPlatform({}).getSessionType();
+  } catch {
+    return 'unknown';
+  }
+};
+
+const runLinuxFocusCommand = async (
+  command: string,
+  debug: boolean,
+  label: string,
+  shellRunner?: ShellRunner,
+): Promise<string | null> => {
+  try {
+    const { stdout, stderr } = await executeCommand(
+      command,
+      {
+        encoding: 'utf8',
+        timeout: 2000,
+        maxBuffer: 1024 * 1024,
+      },
+      shellRunner,
+    );
+
+    if (stderr.trim()) {
+      debugLog(`${label}: stderr: ${stderr.trim()}`, debug);
+    }
+
+    const output = stdout.trim();
+    if (!output) {
+      debugLog(`${label}: empty output`, debug);
+      return null;
+    }
+
+    return output;
+  } catch (error) {
+    debugLog(`${label}: command failed: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+const parseQuotedValues = (text: string): string[] => {
+  const values: string[] = [];
+  const matches = text.match(/"([^"\\]*(?:\\.[^"\\]*)*)"/g) || [];
+
+  for (const match of matches) {
+    const value = match.slice(1, -1).trim();
+    if (value) {
+      values.push(value);
+    }
+  }
+
+  return values;
+};
+
+const getFrontmostAppLinuxX11 = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  if (!process.env.DISPLAY) {
+    debugLog('linux.x11: DISPLAY not set', debug);
+    return null;
+  }
+
+  const xdotoolClass = await runLinuxFocusCommand(
+    'xdotool getwindowfocus getwindowclassname',
+    debug,
+    'linux.x11.xdotool-class',
+    shellRunner,
+  );
+  if (xdotoolClass) {
+    debugLog(`linux.x11: focused class from xdotool: "${xdotoolClass}"`, debug);
+    return xdotoolClass;
+  }
+
+  const xdotoolName = await runLinuxFocusCommand(
+    'xdotool getwindowfocus getwindowname',
+    debug,
+    'linux.x11.xdotool-name',
+    shellRunner,
+  );
+  if (xdotoolName) {
+    debugLog(`linux.x11: focused name from xdotool: "${xdotoolName}"`, debug);
+    return xdotoolName;
+  }
+
+  const activeWindow = await runLinuxFocusCommand(
+    'xprop -root _NET_ACTIVE_WINDOW',
+    debug,
+    'linux.x11.xprop-active-window',
+    shellRunner,
+  );
+
+  const windowId = activeWindow?.match(/0x[0-9a-f]+/i)?.[0] || null;
+  if (!windowId) {
+    debugLog('linux.x11: active window id parse failed', debug);
+    return null;
+  }
+
+  const windowProps = await runLinuxFocusCommand(
+    `xprop -id ${windowId} WM_CLASS WM_NAME`,
+    debug,
+    'linux.x11.xprop-window-props',
+    shellRunner,
+  );
+
+  if (!windowProps) {
+    return null;
+  }
+
+  const quotedValues = parseQuotedValues(windowProps);
+  const focused = quotedValues.find(Boolean) || null;
+  if (focused) {
+    debugLog(`linux.x11: focused value from xprop: "${focused}"`, debug);
+  }
+
+  return focused;
+};
+
+interface SwayTreeNode {
+  focused?: boolean;
+  name?: string;
+  app_id?: string;
+  window_properties?: {
+    class?: string;
+    instance?: string;
+    title?: string;
+  };
+  nodes?: SwayTreeNode[];
+  floating_nodes?: SwayTreeNode[];
+}
+
+const findFocusedSwayNode = (node: SwayTreeNode): SwayTreeNode | null => {
+  if (node.focused) {
+    return node;
+  }
+
+  const children = [...(node.nodes || []), ...(node.floating_nodes || [])];
+  for (const child of children) {
+    const result = findFocusedSwayNode(child);
+    if (result) {
+      return result;
+    }
+  }
+
+  return null;
+};
+
+const getFrontmostAppWaylandSway = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  const treeOutput = await runLinuxFocusCommand(
+    'swaymsg -t get_tree',
+    debug,
+    'linux.wayland.swaymsg',
+    shellRunner,
+  );
+
+  if (!treeOutput) {
+    return null;
+  }
+
+  try {
+    const tree = JSON.parse(treeOutput) as SwayTreeNode;
+    const focused = findFocusedSwayNode(tree);
+    if (!focused) {
+      debugLog('linux.wayland.swaymsg: focused node not found', debug);
+      return null;
+    }
+
+    const name =
+      focused.app_id ||
+      focused.window_properties?.class ||
+      focused.window_properties?.instance ||
+      focused.name ||
+      focused.window_properties?.title ||
+      null;
+
+    if (name) {
+      debugLog(`linux.wayland.swaymsg: focused app "${name}"`, debug);
+    }
+
+    return name;
+  } catch (error) {
+    debugLog(`linux.wayland.swaymsg: parse failed: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+const parseGdbusEvalResult = (output: string): string | null => {
+  const match = output.match(/^\((true|false),\s*(.*)\)$/s);
+  if (!match) {
+    return output.trim() || null;
+  }
+
+  if (match[1] !== 'true') {
+    return null;
+  }
+
+  let value = match[2]?.trim() || '';
+  if (!value || value === "''" || value === '""') {
+    return null;
+  }
+
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  return value.trim() || null;
+};
+
+const getFrontmostAppWaylandGnome = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  const command =
+    'gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "(() => { const w = global.display.focus_window; if (!w) return \"\"; return [w.get_wm_class(), w.get_title()].filter(Boolean).join(\" - \" ); })()"';
+
+  const result = await runLinuxFocusCommand(command, debug, 'linux.wayland.gdbus', shellRunner);
+  if (!result) {
+    return null;
+  }
+
+  const parsed = parseGdbusEvalResult(result);
+  if (parsed) {
+    debugLog(`linux.wayland.gdbus: focused app "${parsed}"`, debug);
+  }
+
+  return parsed;
+};
+
+const getFrontmostAppWaylandKde = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  const activeWindow = await runLinuxFocusCommand(
+    'qdbus org.kde.KWin /KWin org.kde.KWin.activeWindow',
+    debug,
+    'linux.wayland.qdbus-active-window',
+    shellRunner,
+  );
+
+  if (!activeWindow) {
+    return null;
+  }
+
+  const caption = await runLinuxFocusCommand(
+    `qdbus org.kde.KWin /KWin org.kde.KWin.caption ${activeWindow}`,
+    debug,
+    'linux.wayland.qdbus-caption',
+    shellRunner,
+  );
+
+  const windowClass = await runLinuxFocusCommand(
+    `qdbus org.kde.KWin /KWin org.kde.KWin.windowClass ${activeWindow}`,
+    debug,
+    'linux.wayland.qdbus-window-class',
+    shellRunner,
+  );
+
+  const appName = windowClass || caption || activeWindow;
+  debugLog(`linux.wayland.qdbus: focused app "${appName}"`, debug);
+  return appName;
+};
+
+type LinuxDesktopEnvironment = 'sway' | 'gnome' | 'kde' | 'unknown';
+
+const detectWaylandDesktopEnvironment = (): LinuxDesktopEnvironment => {
+  const desktopInfo = [
+    process.env.XDG_CURRENT_DESKTOP,
+    process.env.XDG_SESSION_DESKTOP,
+    process.env.DESKTOP_SESSION,
+  ]
+    .filter(Boolean)
+    .join(':')
+    .toLowerCase();
+
+  if (desktopInfo.includes('sway') || !!process.env.SWAYSOCK) {
+    return 'sway';
+  }
+  if (desktopInfo.includes('gnome')) {
+    return 'gnome';
+  }
+  if (desktopInfo.includes('kde') || desktopInfo.includes('plasma')) {
+    return 'kde';
+  }
+
+  return 'unknown';
+};
+
+const getFrontmostAppLinuxWayland = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  const desktop = detectWaylandDesktopEnvironment();
+  debugLog(`linux.wayland: desktop detected as ${desktop}`, debug);
+
+  if (desktop === 'sway') {
+    const swayResult = await getFrontmostAppWaylandSway(debug, shellRunner);
+    if (swayResult) {
+      return swayResult;
+    }
+  }
+
+  if (desktop === 'gnome') {
+    const gnomeResult = await getFrontmostAppWaylandGnome(debug, shellRunner);
+    if (gnomeResult) {
+      return gnomeResult;
+    }
+  }
+
+  if (desktop === 'kde') {
+    const kdeResult = await getFrontmostAppWaylandKde(debug, shellRunner);
+    if (kdeResult) {
+      return kdeResult;
+    }
+  }
+
+  const swayResult = await getFrontmostAppWaylandSway(debug, shellRunner);
+  if (swayResult) {
+    return swayResult;
+  }
+
+  const gnomeResult = await getFrontmostAppWaylandGnome(debug, shellRunner);
+  if (gnomeResult) {
+    return gnomeResult;
+  }
+
+  return await getFrontmostAppWaylandKde(debug, shellRunner);
+};
+
+/**
+ * Get the focused Linux app/window name via X11 or Wayland fallback chain.
+ */
+const getFrontmostAppLinux = async (debug = false, shellRunner?: ShellRunner): Promise<string | null> => {
+  const sessionType = getLinuxSessionType();
+  debugLog(`linux: session type detected as ${sessionType}`, debug);
+
+  if (sessionType === 'x11') {
+    return await getFrontmostAppLinuxX11(debug, shellRunner);
+  }
+
+  if (sessionType === 'wayland') {
+    return await getFrontmostAppLinuxWayland(debug, shellRunner);
+  }
+
+  if (sessionType === 'tty') {
+    debugLog('linux: tty session - no focus window available', debug);
+    return null;
+  }
+
+  const x11Result = await getFrontmostAppLinuxX11(debug, shellRunner);
+  if (x11Result) {
+    return x11Result;
+  }
+
+  return await getFrontmostAppLinuxWayland(debug, shellRunner);
+};
+
+/**
  * Check if the frontmost app is a known terminal on macOS.
  *
  * @param appName - The frontmost application name
  * @param debug - Enable debug logging
  * @returns True if the app is a known terminal
  */
-const isKnownTerminal = (appName: string | null, debug = false): boolean => {
+const normalizeTerminalName = (name: string): string => name.trim().toLowerCase().replace(/\.exe$/i, '');
+
+const isKnownTerminal = (
+  appName: string | null,
+  knownTerminals: readonly string[],
+  debug = false,
+  useDetectedTerminal = true,
+): boolean => {
   if (!appName) return false;
 
+  const normalizedAppName = normalizeTerminalName(appName);
+
   // Direct match
-  if (KNOWN_TERMINALS_MACOS.some((t) => t.toLowerCase() === appName.toLowerCase())) {
+  if (knownTerminals.some((t) => normalizeTerminalName(t) === normalizedAppName)) {
     debugLog(`"${appName}" is a known terminal (direct match)`, debug);
     return true;
   }
 
   // Partial match (for apps like "iTerm2" matching "iTerm")
-  if (KNOWN_TERMINALS_MACOS.some((t) => appName.toLowerCase().includes(t.toLowerCase()))) {
+  if (knownTerminals.some((t) => normalizedAppName.includes(normalizeTerminalName(t)))) {
     debugLog(`"${appName}" is a known terminal (partial match)`, debug);
     return true;
   }
 
   // Check if the detected terminal from detect-terminal matches
-  const detectedTerminal = getTerminalName(debug);
-  if (detectedTerminal && appName.toLowerCase().includes(detectedTerminal.toLowerCase())) {
-    debugLog(`"${appName}" matches detected terminal "${detectedTerminal}"`, debug);
-    return true;
+  if (useDetectedTerminal) {
+    const detectedTerminal = getTerminalName(debug);
+    if (detectedTerminal && normalizedAppName.includes(normalizeTerminalName(detectedTerminal))) {
+      debugLog(`"${appName}" matches detected terminal "${detectedTerminal}"`, debug);
+      return true;
+    }
   }
 
   debugLog(`"${appName}" is NOT a known terminal`, debug);
@@ -288,8 +821,8 @@ const isKnownTerminal = (appName: string | null, debug = false): boolean => {
  *
  * Platform behavior:
  * - macOS: Uses AppleScript to check the frontmost application
- * - Windows: Always returns false (not supported)
- * - Linux: Always returns false (not supported)
+ * - Windows: Uses PowerShell to check focused window process name
+ * - Linux: Uses X11/Wayland specific focus detection commands
  *
  * Results are cached for 500ms to avoid excessive system calls.
  *
@@ -317,8 +850,8 @@ export const isTerminalFocused = async (options: TerminalFocusOptions = {}): Pro
   // Platform-specific implementation
   if (platform === 'darwin') {
     try {
-      const frontmostApp = await getFrontmostAppMacOS(debug);
-      const isFocused = isKnownTerminal(frontmostApp, debug);
+      const frontmostApp = await getFrontmostAppMacOS(debug, options.shellRunner);
+      const isFocused = isKnownTerminal(frontmostApp, KNOWN_TERMINALS_MACOS, debug);
 
       // Update cache
       focusCache = {
@@ -341,14 +874,59 @@ export const isTerminalFocused = async (options: TerminalFocusOptions = {}): Pro
     }
   }
 
-  // Windows and Linux: Not supported
   if (platform === 'win32') {
-    debugLog('Focus detection not supported on Windows', debug);
-  } else if (platform === 'linux') {
-    debugLog('Focus detection not supported on Linux', debug);
-  } else {
-    debugLog(`Focus detection not supported on platform: ${platform}`, debug);
+    try {
+      const frontmostProcess = await getFrontmostAppWindows(debug, options.shellRunner);
+      const isFocused = isKnownTerminal(frontmostProcess, KNOWN_TERMINALS_WINDOWS, debug, false);
+
+      focusCache = {
+        isFocused,
+        timestamp: now,
+        terminalName: frontmostProcess,
+      };
+
+      debugLog(
+        `Focus detection complete: ${isFocused} (frontmost process: "${frontmostProcess}")`,
+        debug,
+      );
+      return isFocused;
+    } catch (error) {
+      debugLog(`Windows focus detection error: ${getErrorMessage(error)}`, debug);
+      focusCache = {
+        isFocused: false,
+        timestamp: now,
+        terminalName: null,
+      };
+      return false;
+    }
   }
+
+  if (platform === 'linux') {
+    try {
+      const frontmostApp = await getFrontmostAppLinux(debug, options.shellRunner);
+      const isFocused = isKnownTerminal(frontmostApp, KNOWN_TERMINALS_LINUX, debug);
+
+      focusCache = {
+        isFocused,
+        timestamp: now,
+        terminalName: frontmostApp,
+      };
+
+      debugLog(`Focus detection complete: ${isFocused} (frontmost app: "${frontmostApp}")`, debug);
+      return isFocused;
+    } catch (error) {
+      debugLog(`Linux focus detection error: ${getErrorMessage(error)}`, debug);
+      focusCache = {
+        isFocused: false,
+        timestamp: now,
+        terminalName: null,
+      };
+      return false;
+    }
+  }
+
+  // Other platforms: Not supported
+  debugLog(`Focus detection not supported on platform: ${platform}`, debug);
 
   // Cache the result even for unsupported platforms
   focusCache = {
@@ -397,4 +975,6 @@ export default {
   resetTerminalDetection,
   getCacheState,
   KNOWN_TERMINALS_MACOS,
+  KNOWN_TERMINALS_WINDOWS,
+  KNOWN_TERMINALS_LINUX,
 };
