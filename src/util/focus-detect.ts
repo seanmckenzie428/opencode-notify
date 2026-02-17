@@ -302,10 +302,28 @@ export const getTerminalName = (debug = false): string | null => {
 /**
  * AppleScript to get the frontmost application name.
  * Uses System Events to determine which app is currently focused.
+ * Includes checks for:
+ * - App visibility (not hidden with Cmd+H)
+ * - Visible, non-minimized windows
+ * Returns empty string if app is hidden or has no visible windows.
  */
 const APPLESCRIPT_GET_FRONTMOST = `
 tell application "System Events"
   set frontApp to first application process whose frontmost is true
+  
+  -- Check if app is visible (not hidden with Cmd+H)
+  if visible of frontApp is false then
+    return ""
+  end if
+  
+  -- Check if the app has any visible, non-minimized windows
+  try
+    set windowList to every window of frontApp whose visible is true and miniaturized is false
+    if (count of windowList) is 0 then
+      return ""
+    end if
+  end try
+  
   return name of frontApp
 end tell
 `;
@@ -313,6 +331,7 @@ end tell
 /**
  * PowerShell script to get the frontmost process on Windows.
  * Uses user32.dll to get foreground window handle, then Get-Process by PID.
+ * Includes checks for minimized (IsIconic) and invisible (IsWindowVisible) windows.
  */
 const POWERSHELL_GET_FRONTMOST_PROCESS = `
 Add-Type @"
@@ -325,6 +344,14 @@ public static class Win32FocusDetect {
 
   [DllImport("user32.dll")]
   public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool IsIconic(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool IsWindowVisible(IntPtr hWnd);
 }
 "@
 
@@ -333,6 +360,16 @@ $foregroundWindow = [Win32FocusDetect]::GetForegroundWindow()
 
 # No foreground window (e.g., showing desktop)
 if ($foregroundWindow -eq [IntPtr]::Zero) {
+  return
+}
+
+# Check if window is minimized (iconic) - if so, not truly focused
+if ([Win32FocusDetect]::IsIconic($foregroundWindow)) {
+  return
+}
+
+# Check if window is visible - if not, not truly focused
+if (-not [Win32FocusDetect]::IsWindowVisible($foregroundWindow)) {
   return
 }
 
