@@ -17,7 +17,7 @@
     // ============================================================
 
     // Internal version tracking - DO NOT REMOVE
-    "_configVersion": "1.2.5",
+    "_configVersion": "1.3.3",
 
     // ============================================================
     // PLUGIN ENABLE/DISABLE
@@ -78,7 +78,7 @@
     // ============================================================
     // 'openai'     - OpenAI-compatible TTS (Self-hosted/Cloud, e.g. Kokoro, LocalAI)
     // 'elevenlabs' - Best quality, anime-like voices (requires API key, free tier: 10k chars/month)
-    // 'edge'       - Good quality neural voices (Free, Native Node.js implementation)
+    // 'edge'       - Good quality neural voices (Python edge-tts CLI RECOMMENDED, with msedge-tts npm fallback)
     // 'sapi'       - Windows built-in voices (free, offline, robotic)
     "ttsEngine": "elevenlabs",
     
@@ -109,9 +109,10 @@
     "elevenLabsStyle": 0.5,           // Style exaggeration (higher = more expressive)
     
     // ============================================================
-    // EDGE TTS SETTINGS (Free Neural Voices - Fallback)
+    // EDGE TTS SETTINGS (Free Neural Voices)
     // ============================================================
-    // Native Node.js implementation (No external dependencies)
+    // Uses Python edge-tts CLI (RECOMMENDED, pip install edge-tts) with automatic
+    // fallback to msedge-tts npm package if Python is not available.
     
     // Voice options (run 'edge-tts --list-voices' to see all):
     //   'en-US-AnaNeural'   - Young, cute, cartoon-like (RECOMMENDED)
@@ -133,6 +134,11 @@
     
     // Voice (run PowerShell to list all installed voices):
     //   Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | % { $_.VoiceInfo.Name }
+    //
+    // Common Windows voices:
+    //   'Microsoft Zira Desktop' - Female, US English
+    //   'Microsoft David Desktop' - Male, US English
+    //   'Microsoft Hazel Desktop' - Female, UK English
     "sapiVoice": "Microsoft Zira Desktop",
     
     // Speech rate: -10 (slowest) to +10 (fastest), 0 is normal
@@ -221,13 +227,22 @@
     ],
 
     // ============================================================
-    // PERMISSION BATCHING
+    // PERMISSION BATCHING (Multiple permissions at once)
     // ============================================================
+    // When multiple permissions arrive simultaneously, batch them into one notification
+    // This prevents overlapping sounds when 5+ permissions come at once
+    
+    // Batch window (ms) - how long to wait for more permissions before notifying
     "permissionBatchWindowMs": 800,
 
     // ============================================================
-    // QUESTION TOOL MESSAGES (SDK v1.1.7+)
+    // QUESTION TOOL SETTINGS (SDK v1.1.7+ - Agent asking user questions)
     // ============================================================
+    // The "question" tool allows the LLM to ask users questions during execution.
+    // This is useful for gathering preferences, clarifying instructions, or getting
+    // decisions on implementation choices.
+    
+    // Messages when agent asks user a question
     "questionTTSMessages": [
         "Hey! I have a question for you. Please check your screen.",
         "Attention! I need your input to continue.",
@@ -256,12 +271,19 @@
         "Still waiting for your answers on {count} questions! The task is on hold.",
         "Your input is needed! {count} questions are pending your response."
     ],
+    // Delay (in seconds) before question reminder fires
     "questionReminderDelaySeconds": 25,
+    
+    // Question batch window (ms) - how long to wait for more questions before notifying
     "questionBatchWindowMs": 800,
 
     // ============================================================
-    // ERROR NOTIFICATION SETTINGS
+    // ERROR NOTIFICATION SETTINGS (Session Errors)
     // ============================================================
+    // Notify users when the agent encounters an error during execution.
+    // Error notifications use more urgent messaging to get user attention.
+    
+    // Messages when agent encounters an error
     "errorTTSMessages": [
         "Oops! Something went wrong. Please check for errors.",
         "Alert! The agent encountered an error and needs your attention.",
@@ -290,17 +312,51 @@
         "Still waiting! {count} errors need your attention.",
         "Don't forget! There are {count} unresolved errors in your session."
     ],
+    // Delay (in seconds) before error reminder fires (shorter than idle for urgency)
     "errorReminderDelaySeconds": 20,
 
     // ============================================================
-    // AI MESSAGE GENERATION
+    // AI MESSAGE GENERATION (OpenAI-Compatible Endpoints)
     // ============================================================
+    // Use a local/self-hosted AI to generate dynamic notification messages
+    // instead of using preset static messages. The AI generates the text,
+    // which is then spoken by your configured TTS engine (ElevenLabs, Edge, etc.)
+    //
+    // Supports: Ollama, LM Studio, LocalAI, vLLM, llama.cpp, Jan.ai, and any
+    // OpenAI-compatible endpoint. You provide your own endpoint URL and API key.
+    
     "enableAIMessages": false,
+    
+    // Your AI server endpoint URL (e.g., Ollama: http://localhost:11434/v1)
+    // Common endpoints:
+    //   Ollama:    http://localhost:11434/v1
+    //   LM Studio: http://localhost:1234/v1
+    //   LocalAI:   http://localhost:8080/v1
+    //   vLLM:      http://localhost:8000/v1
+    //   Jan.ai:    http://localhost:1337/v1
     "aiEndpoint": "http://localhost:11434/v1",
+    
+    // Model name to use (depends on what's loaded in your AI server)
+    // Examples: "llama3", "mistral", "phi3", "gemma2", "qwen2"
     "aiModel": "llama3",
+    
+    // API key for your AI server (leave empty for Ollama/LM Studio/LocalAI)
+    // Only needed if your server requires authentication
     "aiApiKey": "",
+    
+    // Request timeout in milliseconds (local AI can be slow on first request)
     "aiTimeout": 15000,
+    
+    // Fallback to static preset messages if AI generation fails
     "aiFallbackToStatic": true,
+    
+    // Enable context-aware AI messages (includes project name, task title, and change summary)
+    // When enabled, AI-generated notifications will include relevant context like:
+    // - Project name (e.g., "Your work on MyProject is complete!")
+    // - Task/session title if available
+    // - Change summary (files modified, lines added/deleted)
+    // Disabled by default - enable this for more personalized notifications
+    "enableContextAwareAI": false,
     "aiPrompts": {
         "idle": "Generate a single brief, friendly notification sentence (max 15 words) saying a coding task is complete. Be encouraging and warm. Output only the message, no quotes.",
         "permission": "Generate a single brief, urgent but friendly notification sentence (max 15 words) asking the user to approve a permission request. Output only the message, no quotes.",
@@ -332,35 +388,91 @@
     // ============================================================
     // DESKTOP NOTIFICATION SETTINGS
     // ============================================================
+    // Native desktop notifications (Windows Toast, macOS Notification Center, Linux notify-send)
+    // These appear as system notifications alongside sound and TTS.
+    //
+    // Note: On Linux, you may need to install libnotify-bin:
+    //   Ubuntu/Debian: sudo apt install libnotify-bin
+    //   Fedora: sudo dnf install libnotify
+    //   Arch: sudo pacman -S libnotify
+    
+    // Enable native desktop notifications
     "enableDesktopNotification": true,
+    
+    // How long the notification stays on screen (in seconds)
+    // Note: Some platforms may ignore this (especially Windows 10+)
     "desktopNotificationTimeout": 5,
+    
+    // Include the project name in notification titles for easier identification
+    // Example: "OpenCode - MyProject" instead of just "OpenCode"
     "showProjectInNotification": true,
 
     // ============================================================
     // FOCUS DETECTION SETTINGS
     // ============================================================
-    "suppressWhenFocused": true,
+    // Suppress sound/desktop notifications when terminal window is focused.
+    // Cross-platform: Windows, macOS, and Linux (X11 via xdotool/xprop, Wayland via gdbus).
+    // Default: false (notifications always play regardless of focus)
+    // Set to true to avoid notification spam when actively working in terminal
+    "suppressWhenFocused": false,
     "alwaysNotify": false,
 
     // ============================================================
-    // WEBHOOK NOTIFICATION SETTINGS
+    // WEBHOOK NOTIFICATION SETTINGS (Discord/Generic)
     // ============================================================
+    // Send notifications to a Discord webhook or any compatible endpoint.
+    // This allows you to receive notifications on your phone or other devices.
+    
+    // Enable webhook notifications
     "enableWebhook": false,
+    
+    // Webhook URL (e.g., https://discord.com/api/webhooks/...)
     "webhookUrl": "",
+    
+    // Username to show in the webhook message
     "webhookUsername": "OpenCode Notify",
+    
+    // Events that should trigger a webhook notification
+    // Options: "idle", "permission", "error", "question"
     "webhookEvents": ["idle", "permission", "error", "question"],
+    
+    // Mention @everyone on permission requests (Discord only)
     "webhookMentionOnPermission": false,
 
     // ============================================================
-    // SOUND THEME SETTINGS
+    // SOUND THEME SETTINGS (Themed Sound Packs)
     // ============================================================
+    // Configure a directory containing custom sound files for notifications.
+    // This allows you to use themed sound packs (e.g., Warcraft, StarCraft, etc.)
+    //
+    // Directory structure should contain:
+    //   /path/to/theme/idle/       - Sounds for task completion
+    //   /path/to/theme/permission/ - Sounds for permission requests
+    //   /path/to/theme/error/      - Sounds for agent errors
+    //   /path/to/theme/question/   - Sounds for agent questions
+    //
+    // If a specific event folder is missing, it falls back to default sounds.
+    
+    // Path to your custom sound theme directory (absolute path recommended)
     "soundThemeDir": "",
+    
+    // Pick a random sound from the appropriate theme folder for each notification
     "randomizeSoundFromTheme": true,
 
     // ============================================================
     // PER-PROJECT SOUND SETTINGS
     // ============================================================
+    // Assign a unique notification sound to each project based on its path.
+    // This helps you distinguish which project is notifying you when working
+    // on multiple tasks simultaneously.
+    //
+    // Note: Requires sounds named 'ding1.mp3' through 'ding6.mp3' in your 
+    // assets/ folder. If disabled, default sound files are used.
+    
+    // Enable unique sounds per project
     "perProjectSounds": false,
+    
+    // Seed value to change sound assignments (0-999)
     "projectSoundSeed": 0,
 
     // General options

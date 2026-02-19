@@ -25,3 +25,7 @@ tests/.env.local
 
 # Coverage reports
 coverage/
+
+# Build output
+dist/
+*.tsbuildinfo
