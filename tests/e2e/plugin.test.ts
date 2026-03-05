@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import SmartVoiceNotifyPlugin from '../../src/index.js';
 import { clearPresenceCache } from '../../src/util/focus-detect.js';
-import { 
+import {
   createTestTempDir, 
   cleanupTestTempDir, 
   createTestConfig, 
@@ -14,6 +14,7 @@ import {
   createMockClient,
   mockEvents,
   wait,
+  waitFor,
   wasTTSCalled,
   getTTSCalls,
   getAudioCalls,
@@ -488,7 +489,7 @@ describe('Plugin E2E (Plugin Core)', () => {
     });
   });
 
-  describe('webhook away gating', () => {
+  describe.serial('webhook away gating', () => {
     let originalFetch;
 
     beforeEach(() => {
@@ -560,7 +561,7 @@ describe('Plugin E2E (Plugin Core)', () => {
       });
 
       await plugin.event({ event: mockEvents.sessionIdle('session-webhook-away') });
-      await wait(100);
+      await waitFor(() => globalThis.fetch.mock.calls.length === 1, 1000, 25);
 
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
