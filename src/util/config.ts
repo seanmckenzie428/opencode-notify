@@ -154,10 +154,6 @@ export const getDefaultConfigObject = (): PluginConfig => ({
   edgeVoice: 'en-US-JennyNeural',
   edgePitch: '+0Hz',
   edgeRate: '+10%',
-  sapiVoice: 'Microsoft Zira Desktop',
-  sapiRate: -1,
-  sapiPitch: 'medium',
-  sapiVolume: 'loud',
   openaiTtsEndpoint: '',
   openaiTtsApiKey: '',
   openaiTtsModel: 'tts-1',
@@ -310,8 +306,6 @@ export const getDefaultConfigObject = (): PluginConfig => ({
     'Opera',
     'Vivaldi',
     'Chromium',
-    'msedge',
-    'msedge.exe',
     'chrome',
     'chrome.exe',
     'firefox',
@@ -480,7 +474,6 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // 'openai'     - OpenAI-compatible TTS (Self-hosted/Cloud, e.g. Kokoro, LocalAI)
     // 'elevenlabs' - Best quality, anime-like voices (requires API key, free tier: 10k chars/month)
     // 'edge'       - Good quality neural voices (Python edge-tts CLI RECOMMENDED, with msedge-tts npm fallback)
-    // 'sapi'       - Windows built-in voices (free, offline, robotic)
     "ttsEngine": "${overrides.ttsEngine || 'elevenlabs'}",
     
     // Enable TTS for notifications (falls back to sound files if TTS fails)
@@ -533,28 +526,6 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     
     // Speech rate: -50% to +100%
     "edgeRate": "${overrides.edgeRate || '+10%'}",
-    
-    // ============================================================
-    // SAPI SETTINGS (Windows Built-in - Last Resort Fallback)
-    // ============================================================
-    
-    // Voice (run PowerShell to list all installed voices):
-    //   Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | % { $_.VoiceInfo.Name }
-    //
-    // Common Windows voices:
-    //   'Microsoft Zira Desktop' - Female, US English
-    //   'Microsoft David Desktop' - Male, US English
-    //   'Microsoft Hazel Desktop' - Female, UK English
-    "sapiVoice": "${overrides.sapiVoice || 'Microsoft Zira Desktop'}",
-    
-    // Speech rate: -10 (slowest) to +10 (fastest), 0 is normal
-    "sapiRate": ${overrides.sapiRate !== undefined ? overrides.sapiRate : -1},
-    
-    // Pitch: 'x-low', 'low', 'medium', 'high', 'x-high'
-    "sapiPitch": "${overrides.sapiPitch || 'medium'}",
-    
-    // Volume: 'silent', 'x-soft', 'soft', 'medium', 'loud', 'x-loud'
-    "sapiVolume": "${overrides.sapiVolume || 'loud'}",
     
     // ============================================================
     // OPENAI-COMPATIBLE TTS SETTINGS (Kokoro, LocalAI, OpenAI, etc.)
@@ -830,7 +801,7 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // GENERAL SETTINGS
     // ============================================================
     
-    // Wake monitor from sleep when notifying (Windows/macOS)
+    // Wake monitor from sleep when notifying (macOS)
     "wakeMonitor": ${overrides.wakeMonitor !== undefined ? overrides.wakeMonitor : true},
     
     // Force system volume up if below threshold
@@ -848,19 +819,13 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // ============================================================
     // DESKTOP NOTIFICATION SETTINGS
     // ============================================================
-    // Native desktop notifications (Windows Toast, macOS Notification Center, Linux notify-send)
+    // Native desktop notifications (macOS Notification Center)
     // These appear as system notifications alongside sound and TTS.
     //
-    // Note: On Linux, you may need to install libnotify-bin:
-    //   Ubuntu/Debian: sudo apt install libnotify-bin
-    //   Fedora: sudo dnf install libnotify
-    //   Arch: sudo pacman -S libnotify
-    
     // Enable native desktop notifications
     "enableDesktopNotification": ${overrides.enableDesktopNotification !== undefined ? overrides.enableDesktopNotification : true},
     
     // How long the notification stays on screen (in seconds)
-    // Note: Some platforms may ignore this (especially Windows 10+)
     "desktopNotificationTimeout": ${overrides.desktopNotificationTimeout !== undefined ? overrides.desktopNotificationTimeout : 5},
     
     // Include the project name in notification titles for easier identification
@@ -898,8 +863,6 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
       'Opera',
       'Vivaldi',
       'Chromium',
-      'msedge',
-      'msedge.exe',
       'chrome',
       'chrome.exe',
       'firefox',
@@ -978,7 +941,7 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // Seed value to change sound assignments (0-999)
     "projectSoundSeed": ${overrides.projectSoundSeed !== undefined ? overrides.projectSoundSeed : 0},
     
-    // Consider monitor asleep after this many seconds of inactivity (Windows only)
+    // Fallback idle threshold used by presence detection heuristics
     "idleThresholdSeconds": ${overrides.idleThresholdSeconds !== undefined ? overrides.idleThresholdSeconds : 60},
     
     // Enable debug logging to ~/.config/opencode/logs/smart-voice-notify-debug.log

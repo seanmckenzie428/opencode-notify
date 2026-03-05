@@ -41,16 +41,10 @@ describe.skipIf(!hasElevenLabsKey)('ElevenLabs Integration', () => {
     expect(success).toBe(true);
     
     // Verify that playAudioFile was called (via mockShell)
-    // On different platforms, different commands are used, but they all go through mockShell
     expect(mockShell.getCallCount()).toBeGreaterThan(0);
     
     const lastCall = mockShell.getLastCall();
-    if (process.platform === 'win32') {
-      expect(lastCall.command).toContain('powershell.exe');
-      expect(lastCall.command).toContain('MediaPlayer');
-    } else if (process.platform === 'darwin') {
-      expect(lastCall.command).toContain('afplay');
-    }
+    expect(lastCall.command).toContain('afplay');
   }, 30000); // 30s timeout for API call
 
   test('should handle invalid API key gracefully', async () => {
@@ -74,9 +68,7 @@ describe.skipIf(!hasElevenLabsKey)('ElevenLabs Integration', () => {
     const secondTts = createTTS({ $: mockShell, client: mockClient });
     const success = await secondTts.speak('Testing invalid key.');
     
-    // Should fail ElevenLabs and fall back to Edge TTS (which should succeed)
-    // or return false if all fail.
-    // In our implementation, it falls back to Edge -> SAPI.
+    // Should fail ElevenLabs and fall back to Edge TTS (or return false if all fail).
     expect(success).toBeDefined();
   }, 10000);
 });

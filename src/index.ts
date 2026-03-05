@@ -42,15 +42,14 @@ const getErrorMessage = (error: unknown): string => {
  * A smart notification plugin with multiple TTS engines (auto-fallback):
  * 1. ElevenLabs (Online, High Quality, Anime-like voices)
  * 2. Edge TTS (Free, Neural voices)
- * 3. Windows SAPI (Offline, Built-in)
- * 4. Local Sound Files (Fallback)
+ * 3. Local Sound Files (Fallback)
  * 
  * Features:
  * - Smart notification mode (sound-first, tts-first, both, sound-only)
  * - Delayed TTS reminders if user doesn't respond
  * - Follow-up reminders with exponential backoff
  * - Monitor wake and volume boost
- * - Cross-platform support (Windows, macOS, Linux)
+ * - macOS-focused behavior
  * 
  * @type {import("@opencode-ai/plugin").Plugin}
  */
@@ -127,7 +126,7 @@ export default async function SmartVoiceNotifyPlugin({
   // ========================================
   // IDLE EVENT DEBOUNCING STATE
   // Prevents multiple notifications when SDK fires duplicate session.idle events
-  // (observed on Linux when error + idle events fire in rapid succession)
+  // (observed when SDK emits duplicate idle/error events in rapid succession)
   // ========================================
   
   // Map of sessionID -> timestamp of last processed idle notification
@@ -1269,7 +1268,7 @@ export default async function SmartVoiceNotifyPlugin({
           if (!sessionID) return;
 
           // ========================================
-          // DEBOUNCE CHECK: Prevent duplicate notifications on Linux
+          // DEBOUNCE CHECK: Prevent duplicate notifications on rapid duplicate events
           // The OpenCode SDK can fire multiple session.idle events in rapid succession
           // (especially after errors). Skip if we recently notified for this session.
           // ========================================

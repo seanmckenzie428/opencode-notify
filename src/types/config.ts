@@ -1,14 +1,10 @@
 export type NotificationMode = 'sound-first' | 'tts-first' | 'both' | 'sound-only';
 
-export type TTSEngine = 'openai' | 'elevenlabs' | 'edge' | 'sapi';
+export type TTSEngine = 'openai' | 'elevenlabs' | 'edge';
 
 export type NotificationEventType = 'idle' | 'permission' | 'question' | 'error';
 
 export type PluginEnabledValue = boolean | 'enabled' | 'disabled' | 'true' | 'false';
-
-export type SapiPitch = 'x-low' | 'low' | 'medium' | 'high' | 'x-high' | string;
-
-export type SapiVolume = 'silent' | 'x-soft' | 'soft' | 'medium' | 'loud' | 'x-loud' | string;
 
 export type OpenAITtsFormat = 'mp3' | 'opus' | 'aac' | 'flac' | 'wav' | 'pcm' | string;
 
@@ -75,10 +71,6 @@ export interface PluginConfig {
   edgePitch: string;
   edgeRate: string;
   edgeVolume?: string;
-  sapiVoice: string;
-  sapiRate: number;
-  sapiPitch: SapiPitch;
-  sapiVolume: SapiVolume;
 
   // OpenAI-compatible TTS
   openaiTtsEndpoint: string;

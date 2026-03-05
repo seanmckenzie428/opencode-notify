@@ -686,7 +686,7 @@ describe('config module', () => {
     
     test('tts engine has valid default value', () => {
       const config = loadConfig('smart-voice-notify');
-      expect(['elevenlabs', 'edge', 'sapi', 'openai']).toContain(config.ttsEngine);
+      expect(['elevenlabs', 'edge', 'openai']).toContain(config.ttsEngine);
     });
   });
 });

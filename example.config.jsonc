@@ -79,7 +79,6 @@
     // 'openai'     - OpenAI-compatible TTS (Self-hosted/Cloud, e.g. Kokoro, LocalAI)
     // 'elevenlabs' - Best quality, anime-like voices (requires API key, free tier: 10k chars/month)
     // 'edge'       - Good quality neural voices (Python edge-tts CLI RECOMMENDED, with msedge-tts npm fallback)
-    // 'sapi'       - Windows built-in voices (free, offline, robotic)
     "ttsEngine": "elevenlabs",
     
     // Enable TTS for notifications (falls back to sound files if TTS fails)
@@ -127,28 +126,6 @@
     
     // Speech rate: -50% to +100%
     "edgeRate": "+10%",
-    
-    // ============================================================
-    // SAPI SETTINGS (Windows Built-in - Last Resort Fallback)
-    // ============================================================
-    
-    // Voice (run PowerShell to list all installed voices):
-    //   Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | % { $_.VoiceInfo.Name }
-    //
-    // Common Windows voices:
-    //   'Microsoft Zira Desktop' - Female, US English
-    //   'Microsoft David Desktop' - Male, US English
-    //   'Microsoft Hazel Desktop' - Female, UK English
-    "sapiVoice": "Microsoft Zira Desktop",
-    
-    // Speech rate: -10 (slowest) to +10 (fastest), 0 is normal
-    "sapiRate": -1,
-    
-    // Pitch: 'x-low', 'low', 'medium', 'high', 'x-high'
-    "sapiPitch": "medium",
-    
-    // Volume: 'silent', 'x-soft', 'soft', 'medium', 'loud', 'x-loud'
-    "sapiVolume": "loud",
     
     // ============================================================
     // OPENAI-COMPATIBLE TTS SETTINGS (Kokoro, LocalAI, OpenAI, etc.)

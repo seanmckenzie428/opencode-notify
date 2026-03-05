@@ -8,13 +8,8 @@ import type { DesktopNotifyOptions, NotificationResult } from '../types/notifica
 /**
  * Desktop Notification Module for OpenCode Smart Voice Notify
  *
- * Provides cross-platform native desktop notifications using node-notifier.
- * Supports Windows Toast, macOS Notification Center, and Linux notify-send.
- *
- * Platform-specific behaviors:
- * - Windows: Uses SnoreToast for Windows 8+ toast notifications
- * - macOS: Uses terminal-notifier for Notification Center
- * - Linux: Uses notify-send (requires libnotify-bin package)
+ * Provides macOS native desktop notifications using node-notifier.
+ * Uses terminal-notifier via Notification Center.
  *
  * @module util/desktop-notify
  * @see docs/ARCHITECT_PLAN.md - Phase 1, Task 1.2
@@ -83,25 +78,11 @@ export const getPlatform = (): NodeJS.Platform => os.platform();
  * @returns Support status and reason if not supported
  */
 export const checkNotificationSupport = (): NotificationSupport => {
-  const platform = getPlatform();
-
-  switch (platform) {
-    case 'darwin':
-      // macOS always supports notifications via terminal-notifier (bundled)
-      return { supported: true };
-
-    case 'win32':
-      // Windows 8+ supports toast notifications via SnoreToast (bundled)
-      return { supported: true };
-
-    case 'linux':
-      // Linux requires notify-send from libnotify-bin package
-      // We don't check for its existence here - node-notifier handles the fallback
-      return { supported: true };
-
-    default:
-      return { supported: false, reason: `Unsupported platform: ${platform}` };
+  if (getPlatform() !== 'darwin') {
+    return { supported: false, reason: `Desktop notifications are macOS-only (current: ${getPlatform()})` };
   }
+
+  return { supported: true };
 };
 
 /**
@@ -134,43 +115,25 @@ const buildPlatformOptions = (
     baseOptions.icon = icon;
   }
 
-  // Platform-specific options
-  switch (platform) {
-    case 'darwin':
-      // macOS Notification Center options
-      return {
-        ...baseOptions,
-        timeout,
-        subtitle: subtitle || undefined,
-      };
-
-    case 'win32':
-      // Windows Toast options
-      return {
-        ...baseOptions,
-        // Windows doesn't use timeout the same way - notifications persist until dismissed
-        // sound can be true/false or a system sound name
-        sound,
-      };
-
-    case 'linux':
-      // Linux notify-send options
-      return {
-        ...baseOptions,
-        timeout, // Timeout in seconds
-        urgency: urgency || 'normal', // low, normal, critical
-        'app-name': 'OpenCode Smart Notify',
-      };
-
-    default:
-      return baseOptions;
+  if (platform === 'darwin') {
+    return {
+      ...baseOptions,
+      timeout,
+      subtitle: subtitle || undefined,
+    };
   }
+
+  return {
+    ...baseOptions,
+    timeout,
+    urgency: urgency || 'normal',
+  };
 };
 
 /**
  * Send a native desktop notification.
  *
- * This is the main function for sending cross-platform desktop notifications.
+ * This is the main function for sending desktop notifications on macOS.
  * It handles platform-specific options and gracefully fails if notifications
  * are not supported or the notifier encounters an error.
  *
@@ -297,7 +260,7 @@ export const notifyPermissionRequest = async (
 
   return sendDesktopNotification(title, message, {
     timeout: 10, // Longer timeout for permissions
-    urgency: 'critical', // Higher urgency on Linux
+    urgency: 'critical',
     sound: false, // We handle sound separately
     ...options,
   });

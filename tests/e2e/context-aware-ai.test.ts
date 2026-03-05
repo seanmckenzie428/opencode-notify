@@ -262,7 +262,7 @@ describe('Context-Aware AI Feature (Issue #9)', () => {
         notificationMode: 'tts-first',
         enableTTS: true,
         enableSound: true,
-        ttsEngine: 'sapi',
+        ttsEngine: 'edge',
         aiEndpoint: 'http://localhost:11434/v1',
         aiPrompts: {
           idle: 'Generate completion notification.'
@@ -322,7 +322,7 @@ describe('Context-Aware AI Feature (Issue #9)', () => {
         notificationMode: 'tts-first',
         enableTTS: true,
         enableSound: true,
-        ttsEngine: 'sapi',
+        ttsEngine: 'edge',
         aiEndpoint: 'http://localhost:11434/v1',
         aiPrompts: {
           idle: 'Generate completion notification.'

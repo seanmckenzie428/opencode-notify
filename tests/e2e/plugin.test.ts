@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import SmartVoiceNotifyPlugin from '../../src/index.js';
 import { clearPresenceCache } from '../../src/util/focus-detect.js';
@@ -17,8 +18,7 @@ import {
   waitFor,
   wasTTSCalled,
   getTTSCalls,
-  getAudioCalls,
-  isWindows
+  getAudioCalls
 } from '../setup.js';
 
 describe('Plugin E2E (Plugin Core)', () => {
@@ -93,14 +93,13 @@ describe('Plugin E2E (Plugin Core)', () => {
       expect(toastCalls[0].message).toContain('Agent has finished');
     });
 
-    // Skip on non-Windows CI: TTS-first mode requires working TTS engine
-    test.skipIf(!isWindows)('should speak immediately when notificationMode is tts-first', async () => {
+    test('should speak immediately when notificationMode is tts-first', async () => {
       createTestConfig(createMinimalConfig({ 
         enabled: true, 
         notificationMode: 'tts-first',
         enableTTS: true,
         enableSound: true,
-        ttsEngine: 'sapi' // Use SAPI on Windows for reliable offline testing
+        ttsEngine: 'edge'
       }));
       
       const plugin = await SmartVoiceNotifyPlugin({
@@ -115,8 +114,7 @@ describe('Plugin E2E (Plugin Core)', () => {
       // Should NOT play sound file directly (tts-first skips sound)
       expect(mockShell.wasCalledWith('test-sound.mp3')).toBe(false);
       
-      // Should speak immediately (Windows SAPI detection)
-      expect(mockShell.wasCalledWith('powershell.exe')).toBe(true);
+      expect(getAudioCalls(mockShell).length).toBeGreaterThan(0);
     });
 
     test('should play sound AND speak when notificationMode is both', async () => {
@@ -171,7 +169,7 @@ describe('Plugin E2E (Plugin Core)', () => {
 
     // ========================================
     // IDLE EVENT DEBOUNCING TESTS
-    // Tests for the fix of duplicate notifications on Linux
+    // Tests for duplicate idle-event suppression
     // when SDK fires multiple session.idle events in rapid succession
     // ========================================
     
@@ -190,7 +188,7 @@ describe('Plugin E2E (Plugin Core)', () => {
       });
       
       // Fire multiple idle events for the SAME session in rapid succession
-      // (simulating the Linux bug where SDK fires duplicates within ~100ms)
+      // (simulating duplicate SDK idle events fired within ~100ms)
       const sessionId = 'session-debounce-test';
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
       await plugin.event({ event: mockEvents.sessionIdle(sessionId) });
@@ -291,8 +289,7 @@ describe('Plugin E2E (Plugin Core)', () => {
       expect(mockClient.tui.getToastCalls().length).toBe(2);
     });
 
-    // Skip on non-Windows CI: TTS reminder tests require working TTS engine and are timing-sensitive
-    test.skipIf(!isWindows)('should schedule TTS reminder after configured delay', async () => {
+    test('should schedule TTS reminder after configured delay', async () => {
       createTestConfig(createMinimalConfig({ 
         enabled: true, 
         enableTTSReminder: true,
@@ -300,7 +297,7 @@ describe('Plugin E2E (Plugin Core)', () => {
         idleReminderDelaySeconds: 0.1, // Specific for idle
         enableTTS: true,
         enableSound: true, // MUST BE TRUE for speak() to work
-        ttsEngine: 'edge' // Use Edge TTS which works cross-platform
+        ttsEngine: 'edge'
       }));
       
       const plugin = await SmartVoiceNotifyPlugin({
@@ -366,7 +363,8 @@ describe('Plugin E2E (Plugin Core)', () => {
         enableTTSReminder: true,
         permissionReminderDelaySeconds: 0.5,
         enableTTS: true,
-        ttsEngine: 'sapi'
+        ttsEngine: 'edge',
+        enableSound: true
       }));
       
       const plugin = await SmartVoiceNotifyPlugin({
@@ -387,8 +385,9 @@ describe('Plugin E2E (Plugin Core)', () => {
       // Wait for where the reminder would have fired
       await wait(600);
       
-      // Should NOT have called SAPI TTS for the reminder
-      expect(mockShell.wasCalledWith('New-Object -ComObject SAPI.SpVoice')).toBe(false);
+      // Should not play additional audio after user replied
+      const postReplyAudioCalls = getAudioCalls(mockShell).length;
+      expect(postReplyAudioCalls).toBeLessThanOrEqual(2);
     });
   });
 
@@ -427,7 +426,8 @@ describe('Plugin E2E (Plugin Core)', () => {
         enableTTSReminder: true,
         idleReminderDelaySeconds: 0.5,
         enableTTS: true,
-        ttsEngine: 'sapi'
+        ttsEngine: 'edge',
+        enableSound: true
       }));
       
       const plugin = await SmartVoiceNotifyPlugin({
@@ -448,19 +448,19 @@ describe('Plugin E2E (Plugin Core)', () => {
       // Wait for reminder time
       await wait(700);
       
-      // Should NOT have fired reminder
-      expect(mockShell.wasCalledWith('New-Object -ComObject SAPI.SpVoice')).toBe(false);
+      // Should NOT have fired reminder audio after user activity
+      const audioCalls = getAudioCalls(mockShell).length;
+      expect(audioCalls).toBeLessThanOrEqual(2);
     });
 
-    // SAPI TTS is Windows-only, skip on other platforms
-    test.skipIf(!isWindows)('should ignore message updates for already seen IDs', async () => {
+    test('should ignore message updates for already seen IDs', async () => {
        createTestConfig(createMinimalConfig({ 
         enabled: true, 
         enableTTSReminder: true,
         idleReminderDelaySeconds: 0.5,
         enableTTS: true,
-        enableSound: true, // MUST BE TRUE
-        ttsEngine: 'sapi'
+        enableSound: true,
+        ttsEngine: 'edge'
       }));
       
       const plugin = await SmartVoiceNotifyPlugin({
@@ -483,21 +483,27 @@ describe('Plugin E2E (Plugin Core)', () => {
       // Wait long enough for reminder to fire (0.5s)
       await wait(1000);
       
-      // Reminder SHOULD have fired (via SAPI script)
-      expect(mockShell.wasCalledWith('powershell.exe')).toBe(true);
-      expect(mockShell.wasCalledWith('.ps1')).toBe(true);
+      // Reminder SHOULD have fired
+      expect(getAudioCalls(mockShell).length).toBeGreaterThan(2);
     });
   });
 
   describe.serial('webhook away gating', () => {
     let originalFetch;
+    let platformSpy;
 
     beforeEach(() => {
       originalFetch = globalThis.fetch;
+      platformSpy = spyOn(os, 'platform').mockReturnValue('darwin');
+      clearPresenceCache();
     });
 
     afterEach(() => {
       globalThis.fetch = originalFetch;
+      if (platformSpy) {
+        platformSpy.mockRestore();
+      }
+      clearPresenceCache();
     });
 
     test('sends webhook when user is away (locked)', async () => {
@@ -561,6 +567,7 @@ describe('Plugin E2E (Plugin Core)', () => {
       });
 
       await plugin.event({ event: mockEvents.sessionIdle('session-webhook-away') });
+      await waitFor(() => shellRunner.getCallCount() >= 4, 1000, 25);
       await waitFor(() => globalThis.fetch.mock.calls.length === 1, 1000, 25);
 
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
@@ -627,7 +634,8 @@ describe('Plugin E2E (Plugin Core)', () => {
       });
 
       await plugin.event({ event: mockEvents.sessionIdle('session-webhook-active') });
-      await wait(100);
+      await waitFor(() => shellRunner.getCallCount() >= 4, 1000, 25);
+      await wait(50);
 
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });

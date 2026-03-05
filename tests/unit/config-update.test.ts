@@ -345,7 +345,7 @@ describe('config update logic', () => {
         _configVersion: '0.0.1',
         enabled: false,
         notificationMode: 'both',
-        ttsEngine: 'sapi',
+        ttsEngine: 'edge',
         ttsReminderDelaySeconds: 99,
         enableTTS: false,
       });
@@ -355,7 +355,7 @@ describe('config update logic', () => {
       // User values preserved
       expect(config.enabled).toBe(false);
       expect(config.notificationMode).toBe('both');
-      expect(config.ttsEngine).toBe('sapi');
+      expect(config.ttsEngine).toBe('edge');
       expect(config.ttsReminderDelaySeconds).toBe(99);
       expect(config.enableTTS).toBe(false);
 

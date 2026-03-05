@@ -449,30 +449,19 @@ export function createConsoleCapture(): ConsoleCapture {
 }
 
 export const platform = os.platform();
-export const isWindows = platform === 'win32';
 export const isMacOS = platform === 'darwin';
-export const isLinux = platform === 'linux';
 
 export function getTTSCalls(shell: MockShellRunner): ShellCallRecord[] {
   return shell.getCalls().filter((record) => {
     const cmd = record.command;
 
-    if (cmd.includes('powershell.exe') && cmd.includes('-File') && cmd.includes('.ps1')) {
-      return true;
-    }
-
-    if (cmd.includes('paplay') || cmd.includes('aplay') || cmd.includes('afplay')) {
+    if (cmd.includes('afplay')) {
       return true;
     }
 
     if (cmd.includes('say ')) {
       return true;
     }
-
-    if (cmd.includes('System.Windows.Media.MediaPlayer')) {
-      return true;
-    }
-
     return false;
   });
 }
@@ -481,19 +470,7 @@ export function getAudioCalls(shell: MockShellRunner): ShellCallRecord[] {
   return shell.getCalls().filter((record) => {
     const cmd = record.command;
 
-    if (cmd.includes('System.Windows.Media.MediaPlayer')) {
-      return true;
-    }
-
-    if (cmd.includes('powershell.exe') && cmd.includes('-File') && cmd.includes('.ps1')) {
-      return true;
-    }
-
     if (cmd.includes('edge-tts') && cmd.includes('--write-media')) {
-      return true;
-    }
-
-    if (cmd.includes('paplay') || cmd.includes('aplay')) {
       return true;
     }
 
@@ -509,8 +486,8 @@ export function getAudioCalls(shell: MockShellRunner): ShellCallRecord[] {
   });
 }
 
-export function getTestTTSEngine(): 'sapi' | 'edge' {
-  return isWindows ? 'sapi' : 'edge';
+export function getTestTTSEngine(): 'edge' {
+  return 'edge';
 }
 
 export function wasTTSCalled(shell: MockShellRunner): boolean {
@@ -535,9 +512,7 @@ export default {
   waitFor,
   createConsoleCapture,
   platform,
-  isWindows,
   isMacOS,
-  isLinux,
   getTTSCalls,
   getAudioCalls,
   getTestTTSEngine,

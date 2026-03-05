@@ -3,12 +3,10 @@ import os from 'os';
 import path from 'path';
 
 import type { PluginConfig } from '../types/config.js';
-import type { LinuxPlatformAPI } from '../types/linux.js';
 import type { OpenCodeClient, ShellRunner } from '../types/opencode-sdk.js';
 import type { SpeakOptions, TTSAPI, TTSFactoryParams } from '../types/tts.js';
 
 import { loadConfig } from './config.js';
-import { createLinuxPlatform } from './linux.js';
 
 const platform = os.platform();
 // Remove module-level configDir constant that caches process.env prematurely
@@ -75,10 +73,6 @@ export const getTTSConfig = (): PluginConfig => {
     edgeVoice: 'en-US-JennyNeural',
     edgePitch: '+0Hz',
     edgeRate: '+10%',
-    sapiVoice: 'Microsoft Zira Desktop',
-    sapiRate: -1,
-    sapiPitch: 'medium',
-    sapiVolume: 'loud',
 
     // OpenAI-compatible TTS settings
     openaiTtsEndpoint: '',
@@ -255,7 +249,7 @@ export const createTTS = ({ $, client }: TTSFactoryParams): TTSAPI => {
     }
   }
 
-  // Debug logging function (defined early so it can be passed to Linux platform)
+  // Debug logging function
   const debugLog = (message: string): void => {
     if (!config.debugLog) return;
     try {
@@ -263,9 +257,6 @@ export const createTTS = ({ $, client }: TTSFactoryParams): TTSAPI => {
       fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
     } catch {}
   };
-
-  // Initialize Linux platform utilities (only used on Linux)
-  const linux: LinuxPlatformAPI | null = platform === 'linux' ? createLinuxPlatform({ $: shell, debugLog }) : null;
 
   const showToast = async (message: string, variant: ToastVariant = 'info'): Promise<void> => {
     if (!config.enableToast) return;
@@ -291,38 +282,8 @@ export const createTTS = ({ $, client }: TTSFactoryParams): TTSAPI => {
       return;
     }
     try {
-      if (platform === 'win32') {
-        const cmd = `
-          Add-Type -AssemblyName presentationCore
-          $player = New-Object System.Windows.Media.MediaPlayer
-          $player.Volume = 1.0
-          for ($i = 0; $i -lt ${loops}; $i++) {
-            $player.Open([Uri]::new('${filePath.replace(/\\/g, '\\\\')}'))
-            $player.Play()
-            Start-Sleep -Milliseconds 500
-            while ($player.Position -lt $player.NaturalDuration.TimeSpan -and $player.HasAudio) {
-              Start-Sleep -Milliseconds 100
-            }
-          }
-          $player.Close()
-        `;
-        await shell`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ${cmd}`.quiet();
-      } else if (platform === 'darwin') {
-        for (let i = 0; i < loops; i++) {
-          await shell`afplay ${filePath}`.quiet();
-        }
-      } else if (platform === 'linux' && linux) {
-        // Use the Linux platform module for audio playback
-        await linux.playAudioFile(filePath, loops);
-      } else {
-        // Generic fallback for other Unix-like systems
-        for (let i = 0; i < loops; i++) {
-          try {
-            await shell`paplay ${filePath}`.quiet();
-          } catch {
-            await shell`aplay ${filePath}`.quiet();
-          }
-        }
+      for (let i = 0; i < loops; i++) {
+        await shell`afplay ${filePath}`.quiet();
       }
     } catch (error) {
       debugLog(`playAudioFile error: ${getErrorMessage(error)}`);
@@ -449,76 +410,6 @@ export const createTTS = ({ $, client }: TTSFactoryParams): TTSAPI => {
   };
 
   /**
-   * Windows SAPI Engine (Offline, Built-in)
-   */
-  const speakWithSAPI = async (text: string): Promise<boolean> => {
-    if (platform !== 'win32') {
-      debugLog('speakWithSAPI: skipped (not Windows)');
-      return false;
-    }
-    if (!shell) {
-      debugLog('speakWithSAPI: skipped (shell helper $ not available)');
-      return false;
-    }
-    const scriptPath = path.join(os.tmpdir(), `opencode-sapi-${Date.now()}.ps1`);
-    try {
-      const escapedText = text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-      const voice = config.sapiVoice || 'Microsoft Zira Desktop';
-      const rate = Math.max(-10, Math.min(10, config.sapiRate || -1));
-      const pitch = config.sapiPitch || 'medium';
-      const volume = config.sapiVolume || 'loud';
-      const ratePercent = rate >= 0 ? `+${rate * 10}%` : `${rate * 5}%`;
-
-      const ssml = `<?xml version="1.0" encoding="UTF-8"?>
-<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
-  <voice name="${voice.replace(/"/g, '&quot;')}">
-    <prosody rate="${ratePercent}" pitch="${pitch}" volume="${volume}">
-      ${escapedText}
-    </prosody>
-  </voice>
-</speak>`;
-
-      const scriptContent = `
-Add-Type -AssemblyName System.Speech
-$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-try {
-    $synth.Rate = ${rate}
-    try { $synth.SelectVoice("${voice.replace(/"/g, '""')}") } catch { }
-    $ssml = @"
-${ssml}
-"@
-    $synth.SpeakSsml($ssml)
-} catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 1
-} finally {
-    if ($synth) { $synth.Dispose() }
-}
-`;
-      fs.writeFileSync(scriptPath, scriptContent, 'utf-8');
-      const result = await shell`powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${scriptPath}`.nothrow().quiet();
-
-      if (result.exitCode !== 0) {
-        debugLog(`speakWithSAPI failed with code ${result.exitCode}: ${outputToString(result.stderr)}`);
-        return false;
-      }
-      return true;
-    } catch (error) {
-      debugLog(`speakWithSAPI error: ${getErrorMessage(error) || String(error) || 'Unknown error'}`);
-      return false;
-    } finally {
-      try {
-        if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
-      } catch {}
-    }
-  };
-
-  /**
    * macOS Say Engine
    */
   const speakWithSay = async (text: string): Promise<boolean> => {
@@ -600,41 +491,24 @@ ${ssml}
    * Get the current system idle time in seconds.
    */
   const getSystemIdleSeconds = async (): Promise<number> => {
-    if (platform === 'linux') {
-      // On Linux, we can't reliably detect idle time across all DEs
-      // Return a high value to always attempt wake (it's a no-op if already awake)
+    if (platform !== 'darwin' || !shell) {
       return 999;
     }
-    if (platform !== 'win32' || !shell) return 999;
+
     try {
-      const cmd = `
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class IdleCheck {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct LASTINPUTINFO {
-        public uint cbSize;
-        public uint dwTime;
-    }
-    [DllImport("user32.dll")]
-    public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
-    public static uint GetIdleSeconds() {
-        LASTINPUTINFO lii = new LASTINPUTINFO();
-        lii.cbSize = (uint)Marshal.SizeOf(lii);
-        if (GetLastInputInfo(ref lii)) {
-            return (uint)((Environment.TickCount - lii.dwTime) / 1000);
-        }
-        return 0;
-    }
-}
-'@
-[IdleCheck]::GetIdleSeconds()
-      `;
-      const result = await shell`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ${cmd}`.quiet();
-      return parseInt(outputToString(result.stdout).trim() || '0', 10);
+      const result = await shell`ioreg -c IOHIDSystem`.quiet();
+      const output = outputToString(result.stdout);
+      const match = output.match(/"HIDIdleTime"\s*=\s*(\d+)/);
+      if (!match || !match[1]) {
+        return 999;
+      }
+      const idleNanos = Number(match[1]);
+      if (!Number.isFinite(idleNanos)) {
+        return 999;
+      }
+      return Math.floor(idleNanos / 1_000_000_000);
     } catch {
-      return 999; // Assume idle on error
+      return 999;
     }
   };
 
@@ -642,27 +516,14 @@ public static class IdleCheck {
    * Get the current system volume level (0-100).
    */
   const getCurrentVolume = async (): Promise<number> => {
-    // Use Linux platform module
-    if (platform === 'linux' && linux) {
-      return await linux.getCurrentVolume();
+    if (platform !== 'darwin' || !shell) {
+      return -1;
     }
-    if (platform !== 'win32' || !shell) return -1;
+
     try {
-      const cmd = `
-        $signature = @'
-[DllImport("winmm.dll")]
-public static extern int waveOutGetVolume(IntPtr hwo, out uint dwVolume);
-'@
-        Add-Type -MemberDefinition $signature -Name Win32VolCheck -Namespace Win32 -PassThru | Out-Null
-        $vol = 0
-        $result = [Win32.Win32VolCheck]::waveOutGetVolume([IntPtr]::Zero, [ref]$vol)
-        if ($result -eq 0) {
-            $leftVol = $vol -band 0xFFFF
-            [Math]::Round(($leftVol / 65535) * 100)
-        } else { -1 }
-      `;
-      const result = await shell`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ${cmd}`.quiet();
-      return parseInt(outputToString(result.stdout).trim() || '-1', 10);
+      const result = await shell`osascript -e "output volume of (get volume settings)"`.quiet();
+      const parsed = parseInt(outputToString(result.stdout).trim() || '-1', 10);
+      return Number.isFinite(parsed) ? parsed : -1;
     } catch {
       return -1;
     }
@@ -684,17 +545,9 @@ public static extern int waveOutGetVolume(IntPtr hwo, out uint dwVolume);
 
       debugLog(`wakeMonitor: attempting to wake monitor (idle: ${idleSeconds}s, force: ${force})`);
 
-      if (platform === 'win32') {
-        const cmd = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{F15}')`;
-        await shell`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ${cmd}`.quiet();
-        debugLog('wakeMonitor: Windows wake command executed');
-      } else if (platform === 'darwin') {
+      if (platform === 'darwin') {
         await shell`caffeinate -u -t 1`.quiet();
         debugLog('wakeMonitor: macOS wake command executed');
-      } else if (platform === 'linux' && linux) {
-        // Use the Linux platform module for wake monitor
-        await linux.wakeMonitor();
-        debugLog('wakeMonitor: Linux wake command executed');
       }
     } catch (error) {
       debugLog(`wakeMonitor error: ${getErrorMessage(error)}`);
@@ -713,14 +566,8 @@ public static extern int waveOutGetVolume(IntPtr hwo, out uint dwVolume);
         if (currentVolume >= 0 && currentVolume >= volumeThreshold) return;
       }
 
-      if (platform === 'win32') {
-        const cmd = `$wsh = New-Object -ComObject WScript.Shell; 1..50 | ForEach-Object { $wsh.SendKeys([char]175) }`;
-        await shell`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ${cmd}`.quiet();
-      } else if (platform === 'darwin') {
+      if (platform === 'darwin') {
         await shell`osascript -e "set volume output volume 100"`.quiet();
-      } else if (platform === 'linux' && linux) {
-        // Use the Linux platform module for force volume
-        await linux.forceVolume();
       }
     } catch (error) {
       debugLog(`forceVolume error: ${getErrorMessage(error)}`);
@@ -729,13 +576,12 @@ public static extern int waveOutGetVolume(IntPtr hwo, out uint dwVolume);
 
   /**
    * Main Speak function with fallback chain
-   * Cascade: Primary Engine -> Edge TTS -> Windows SAPI -> macOS Say -> Sound File
+   * Cascade: Primary Engine -> Edge TTS -> macOS Say -> Sound File
    *
    * Fallback ensures TTS works even if:
-   * - Python edge-tts not installed (falls to npm package, then SAPI/Say)
-   * - msedge-tts npm fails (403 errors - falls to SAPI/Say)
+   * - Python edge-tts not installed (falls to npm package, then say)
+   * - msedge-tts npm fails (403 errors - falls to say)
    * - User is on macOS without edge-tts (falls to built-in 'say' command)
-   * - User is on Linux without edge-tts (falls to sound file only)
    */
   const speak = async (message: string, options: SpeakOptions = {}): Promise<boolean> => {
     const activeConfig = { ...config, ...options } as PluginConfig & SpeakOptions;
@@ -748,20 +594,16 @@ public static extern int waveOutGetVolume(IntPtr hwo, out uint dwVolume);
       if (engine === 'openai') {
         success = await speakWithOpenAI(message);
         if (!success) success = await speakWithEdgeTTS(message);
-        if (!success) success = await speakWithSAPI(message);
         if (!success) success = await speakWithSay(message); // macOS fallback
       } else if (engine === 'elevenlabs') {
         success = await speakWithElevenLabs(message);
         if (!success) success = await speakWithEdgeTTS(message);
-        if (!success) success = await speakWithSAPI(message);
         if (!success) success = await speakWithSay(message); // macOS fallback
       } else if (engine === 'edge') {
         success = await speakWithEdgeTTS(message);
-        if (!success) success = await speakWithSAPI(message);
         if (!success) success = await speakWithSay(message); // macOS fallback
-      } else if (engine === 'sapi') {
-        success = await speakWithSAPI(message);
-        if (!success) success = await speakWithSay(message);
+      } else {
+        success = await speakWithSay(message);
       }
 
       if (success) return true;

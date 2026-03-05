@@ -15,7 +15,6 @@ import {
   wait,
   getTestTempDir,
   testFileExists,
-  isWindows,
   getTTSCalls,
   wasTTSCalled,
   getAudioCalls
@@ -110,9 +109,7 @@ describe('Plugin E2E (Config Integration)', () => {
       // Verify sound played
       expect(mockShell.wasCalledWith('test-sound.mp3')).toBe(true);
       
-      // Verify TTS was called (platform-aware check)
-      // Edge TTS generates audio and plays via playAudioFile
-      // On Windows this uses MediaPlayer, on Linux paplay/aplay, on macOS afplay
+      // Verify TTS was called (Edge generates audio and is played via afplay)
       expect(wasTTSCalled(mockShell)).toBe(true);
     });
   });
@@ -148,9 +145,7 @@ describe('Plugin E2E (Config Integration)', () => {
       expect(elapsed).toBeGreaterThanOrEqual(customWindow);
     });
 
-    // Skip on non-Windows CI: TTS reminder timing tests are inherently flaky in CI environments
-    // due to network dependency (Edge TTS) or platform-specific engines (SAPI)
-    test.skipIf(!isWindows)('should respect custom reminder delays', async () => {
+    test('should respect custom reminder delays', async () => {
       const customDelay = 0.1; // 100ms - shorter delay for faster test
       createTestConfig(createMinimalConfig({ 
         enabled: true, 
