@@ -368,6 +368,15 @@ describe('config module', () => {
       expect(config.webhookMentionOnPermission).toBe(false);
       expect(config.perProjectSounds).toBe(false);
       expect(config.projectSoundSeed).toBe(0);
+      expect(config.openCodeDesktopAppNames).toEqual(['OpenCode', 'Open Code', 'OpenCode Desktop']);
+      expect(config.openCodeBrowserTitleKeywords).toEqual(['opencode', 'open code', 'opencode.ai']);
+      expect(config.openCodeBrowserUrlKeywords).toEqual([
+        'opencode.ai',
+        'opencode',
+        'localhost:4096',
+        'opencode.local',
+        'opencode.local:4096',
+      ]);
     });
 
     test('preserves user webhook settings', () => {
@@ -660,6 +669,10 @@ describe('config module', () => {
       expect(Array.isArray(config.permissionReminderTTSMessages)).toBe(true);
       expect(Array.isArray(config.questionReminderTTSMessages)).toBe(true);
       expect(Array.isArray(config.webhookEvents)).toBe(true);
+      expect(Array.isArray(config.openCodeDesktopAppNames)).toBe(true);
+      expect(Array.isArray(config.openCodeBrowserAppNames)).toBe(true);
+      expect(Array.isArray(config.openCodeBrowserTitleKeywords)).toBe(true);
+      expect(Array.isArray(config.openCodeBrowserUrlKeywords)).toBe(true);
       
       // Objects
       expect(typeof config.aiPrompts).toBe('object');

@@ -11,8 +11,9 @@ import type { ShellRunner } from '../types/opencode-sdk.js';
 /**
  * Focus Detection Module for OpenCode Smart Voice Notify
  *
- * Detects whether the user is currently looking at the OpenCode terminal.
- * Used to suppress notifications when the user is already focused on the terminal.
+ * Detects app focus and user presence for OpenCode notifications.
+ * Used to suppress local notifications while user is actively focused,
+ * and to gate remote webhooks when the user appears away.
  *
  * Platform support:
  * - macOS: Full support using AppleScript to check frontmost app
@@ -42,6 +43,37 @@ interface FocusDetectionSupport {
 interface TerminalFocusOptions {
   debugLog?: boolean;
   shellRunner?: ShellRunner;
+}
+
+interface FrontmostContext {
+  appName: string | null;
+  bundleId: string | null;
+  windowTitle: string | null;
+  browserUrl: string | null;
+  rawOutput: string | null;
+}
+
+interface OpenCodeClientFocusOptions extends TerminalFocusOptions {
+  desktopAppNames?: readonly string[];
+  desktopBundleIds?: readonly string[];
+  browserAppNames?: readonly string[];
+  browserBundleIds?: readonly string[];
+  browserTitleKeywords?: readonly string[];
+  browserUrlKeywords?: readonly string[];
+}
+
+interface UserPresenceOptions extends TerminalFocusOptions {
+  idleThresholdSeconds?: number;
+}
+
+export interface UserPresenceState {
+  supported: boolean;
+  isLocked: boolean;
+  isScreenAsleep: boolean;
+  isAway: boolean;
+  idleSeconds: number | null;
+  displaySleepThresholdSeconds: number | null;
+  reason?: string;
 }
 
 const getErrorMessage = (error: unknown): string => {
@@ -99,12 +131,38 @@ let focusCache: FocusCacheState = {
   terminalName: null,
 };
 
+let frontmostContextCache: FrontmostContext & { timestamp: number } = {
+  appName: null,
+  bundleId: null,
+  windowTitle: null,
+  browserUrl: null,
+  rawOutput: null,
+  timestamp: 0,
+};
+
+let presenceCache: UserPresenceState & { timestamp: number } = {
+  supported: false,
+  isLocked: false,
+  isScreenAsleep: false,
+  isAway: false,
+  idleSeconds: null,
+  displaySleepThresholdSeconds: null,
+  reason: 'No presence check has run yet',
+  timestamp: 0,
+};
+
 /**
  * Cache TTL in milliseconds.
  * Focus detection results are cached for this duration.
  * 500ms provides a good balance between responsiveness and performance.
  */
 const CACHE_TTL_MS = 500;
+
+/**
+ * Presence cache TTL in milliseconds.
+ * Presence checks invoke multiple system commands, so cache a bit longer.
+ */
+const PRESENCE_CACHE_TTL_MS = 2000;
 
 /**
  * List of known terminal application names for macOS.
@@ -182,6 +240,64 @@ export const KNOWN_TERMINALS_LINUX = [
   'urxvt',
   'rxvt',
   'st',
+] as const;
+
+export const KNOWN_OPENCODE_DESKTOP_APPS = [
+  'OpenCode',
+  'Open Code',
+  'OpenCode Desktop',
+] as const;
+
+export const KNOWN_OPENCODE_DESKTOP_BUNDLE_IDS = [
+  'ai.opencode.desktop',
+  'com.opencode.desktop',
+  'ai.opencode.app',
+  'com.opencode.app',
+] as const;
+
+export const KNOWN_BROWSER_APPS = [
+  'Safari',
+  'Google Chrome',
+  'Chrome',
+  'Arc',
+  'Firefox',
+  'Brave Browser',
+  'Microsoft Edge',
+  'Edge',
+  'Opera',
+  'Vivaldi',
+  'Chromium',
+  'msedge',
+  'msedge.exe',
+  'chrome',
+  'chrome.exe',
+  'firefox',
+  'firefox.exe',
+] as const;
+
+export const KNOWN_BROWSER_BUNDLE_IDS = [
+  'com.apple.Safari',
+  'com.google.Chrome',
+  'company.thebrowser.Browser',
+  'org.mozilla.firefox',
+  'com.brave.Browser',
+  'com.microsoft.edgemac',
+  'com.operasoftware.Opera',
+  'com.vivaldi.Vivaldi',
+] as const;
+
+export const OPENCODE_BROWSER_TITLE_KEYWORDS = [
+  'opencode',
+  'open code',
+  'opencode.ai',
+] as const;
+
+export const OPENCODE_BROWSER_URL_KEYWORDS = [
+  'opencode.ai',
+  'opencode',
+  'localhost:4096',
+  'opencode.local',
+  'opencode.local:4096',
 ] as const;
 
 // ========================================
@@ -310,6 +426,54 @@ tell application "System Events"
 end tell
 `;
 
+const APPLESCRIPT_GET_FRONTMOST_CONTEXT = `
+tell application "System Events"
+  set frontApp to first application process whose frontmost is true
+
+  set appName to ""
+  set bundleID to ""
+  set windowTitle to ""
+  set browserURL to ""
+
+  try
+    set appName to name of frontApp
+  end try
+
+  try
+    set bundleID to bundle identifier of frontApp
+  end try
+
+  if visible of frontApp is false then
+    return appName & "|||" & bundleID & "|||" & windowTitle & "|||" & browserURL
+  end if
+
+  try
+    set windowList to every window of frontApp whose visible is true and miniaturized is false
+    if (count of windowList) is greater than 0 then
+      set windowTitle to name of first item of windowList
+    end if
+  end try
+
+  try
+    if appName is "Safari" then
+      tell application "Safari"
+        if (count of windows) is greater than 0 then
+          set browserURL to URL of front document
+        end if
+      end tell
+    else if appName is in {"Google Chrome", "Chrome", "Chromium", "Brave Browser", "Microsoft Edge", "Opera", "Vivaldi", "Arc"} then
+      tell application appName
+        if (count of windows) is greater than 0 then
+          set browserURL to URL of active tab of front window
+        end if
+      end tell
+    end if
+  end try
+
+  return appName & "|||" & bundleID & "|||" & windowTitle & "|||" & browserURL
+end tell
+`;
+
 /**
  * PowerShell script to get the frontmost process on Windows.
  * Uses user32.dll to get foreground window handle, then Get-Process by PID.
@@ -393,6 +557,75 @@ const getFrontmostAppMacOS = async (debug = false, shellRunner?: ShellRunner): P
   }
 };
 
+const parseFrontmostContextOutput = (output: string): FrontmostContext => {
+  const trimmedOutput = output.trim();
+  if (!trimmedOutput) {
+    return {
+      appName: null,
+      bundleId: null,
+      windowTitle: null,
+      browserUrl: null,
+      rawOutput: null,
+    };
+  }
+
+  const delimiter = '|||';
+  if (!trimmedOutput.includes(delimiter)) {
+    return {
+      appName: trimmedOutput,
+      bundleId: null,
+      windowTitle: null,
+      browserUrl: null,
+      rawOutput: trimmedOutput,
+    };
+  }
+
+  const [rawAppName = '', rawBundleId = '', rawWindowTitle = '', ...urlParts] = trimmedOutput.split(delimiter);
+  const rawBrowserUrl = urlParts.join(delimiter);
+  const appName = rawAppName?.trim() || null;
+  const bundleId = rawBundleId?.trim() || null;
+  const windowTitle = rawWindowTitle?.trim() || null;
+  const browserUrl = rawBrowserUrl?.trim() || null;
+
+  return {
+    appName,
+    bundleId,
+    windowTitle,
+    browserUrl,
+    rawOutput: trimmedOutput,
+  };
+};
+
+const getFrontmostContextMacOS = async (debug = false, shellRunner?: ShellRunner): Promise<FrontmostContext> => {
+  try {
+    const { stdout } = await executeCommand(
+      `osascript -e '${APPLESCRIPT_GET_FRONTMOST_CONTEXT}'`,
+      {
+        encoding: 'utf8',
+        timeout: 2000,
+        maxBuffer: 4096,
+      },
+      shellRunner,
+    );
+
+    const context = parseFrontmostContextOutput(stdout);
+    debugLog(
+      `Frontmost context: app="${context.appName || ''}" bundle="${context.bundleId || ''}" title="${context.windowTitle || ''}" url="${context.browserUrl || ''}"`,
+      debug,
+    );
+    return context;
+  } catch (error) {
+    debugLog(`Failed to get frontmost context: ${getErrorMessage(error)}`, debug);
+    return {
+      appName: null,
+      bundleId: null,
+      windowTitle: null,
+      browserUrl: null,
+      rawOutput: null,
+    };
+  }
+};
+
 /**
  * Get the focused process name on Windows via PowerShell.
  *
@@ -432,6 +665,17 @@ const getFrontmostAppWindows = async (debug = false, shellRunner?: ShellRunner):
     debugLog(`Failed to get frontmost Windows process: ${getErrorMessage(error)}`, debug);
     return null;
   }
+};
+
+const getFrontmostContextWindows = async (debug = false, shellRunner?: ShellRunner): Promise<FrontmostContext> => {
+  const appName = await getFrontmostAppWindows(debug, shellRunner);
+  return {
+    appName,
+    bundleId: null,
+    windowTitle: null,
+    browserUrl: null,
+    rawOutput: appName,
+  };
 };
 
 const getLinuxSessionType = (): 'x11' | 'wayland' | 'tty' | 'unknown' => {
@@ -783,6 +1027,41 @@ const getFrontmostAppLinux = async (debug = false, shellRunner?: ShellRunner): P
   return await getFrontmostAppLinuxWayland(debug, shellRunner);
 };
 
+const getFrontmostContextLinux = async (debug = false, shellRunner?: ShellRunner): Promise<FrontmostContext> => {
+  const sessionType = getLinuxSessionType();
+
+  if (sessionType === 'x11') {
+    const appName = await runLinuxFocusCommand(
+      'xdotool getwindowfocus getwindowclassname',
+      debug,
+      'linux.context.x11.class',
+      shellRunner,
+    );
+    const windowTitle = await runLinuxFocusCommand(
+      'xdotool getwindowfocus getwindowname',
+      debug,
+      'linux.context.x11.name',
+      shellRunner,
+    );
+    return {
+      appName: appName || windowTitle,
+      bundleId: null,
+      windowTitle,
+      browserUrl: null,
+      rawOutput: [appName, windowTitle].filter(Boolean).join(' || ') || null,
+    };
+  }
+
+  const appName = await getFrontmostAppLinux(debug, shellRunner);
+  return {
+    appName,
+    bundleId: null,
+    windowTitle: appName,
+    browserUrl: null,
+    rawOutput: appName,
+  };
+};
+
 /**
  * Check if the frontmost app is a known terminal on macOS.
  *
@@ -825,6 +1104,342 @@ const isKnownTerminal = (
 
   debugLog(`"${appName}" is NOT a known terminal`, debug);
   return false;
+};
+
+const normalizeAppName = (name: string): string => name.trim().toLowerCase().replace(/\.exe$/i, '');
+
+const matchesKnownApp = (appName: string | null, candidates: readonly string[]): boolean => {
+  if (!appName) {
+    return false;
+  }
+
+  const normalizedAppName = normalizeAppName(appName);
+  return candidates.some((candidate) => {
+    const normalizedCandidate = normalizeAppName(candidate);
+    return normalizedAppName === normalizedCandidate || normalizedAppName.includes(normalizedCandidate);
+  });
+};
+
+const hasKeyword = (value: string | null, keywords: readonly string[]): boolean => {
+  if (!value) {
+    return false;
+  }
+
+  const normalizedValue = value.toLowerCase();
+  return keywords.some((keyword) => normalizedValue.includes(keyword.toLowerCase()));
+};
+
+const getFrontmostContext = async (options: TerminalFocusOptions = {}): Promise<FrontmostContext> => {
+  const debug = options.debugLog || false;
+  const now = Date.now();
+
+  if (now - frontmostContextCache.timestamp < CACHE_TTL_MS) {
+    return {
+      appName: frontmostContextCache.appName,
+      bundleId: frontmostContextCache.bundleId,
+      windowTitle: frontmostContextCache.windowTitle,
+      browserUrl: frontmostContextCache.browserUrl,
+      rawOutput: frontmostContextCache.rawOutput,
+    };
+  }
+
+  const platform = getPlatform();
+  let context: FrontmostContext = {
+    appName: null,
+    bundleId: null,
+    windowTitle: null,
+    browserUrl: null,
+    rawOutput: null,
+  };
+
+  if (platform === 'darwin') {
+    context = await getFrontmostContextMacOS(debug, options.shellRunner);
+  } else if (platform === 'win32') {
+    context = await getFrontmostContextWindows(debug, options.shellRunner);
+  } else if (platform === 'linux') {
+    context = await getFrontmostContextLinux(debug, options.shellRunner);
+  }
+
+  frontmostContextCache = {
+    ...context,
+    timestamp: now,
+  };
+
+  return context;
+};
+
+/**
+ * Check whether the OpenCode desktop app (or browser-based web client) is focused.
+ */
+export const isOpenCodeClientFocused = async (
+  options: OpenCodeClientFocusOptions = {},
+): Promise<boolean> => {
+  const debug = options.debugLog || false;
+  const context = await getFrontmostContext(options);
+  const appName = context.appName;
+  const bundleId = context.bundleId;
+
+  if (!appName && !bundleId) {
+    debugLog('OpenCode client focus check: frontmost app unavailable (name/bundle missing)', debug);
+    return false;
+  }
+
+  const desktopAppNames = options.desktopAppNames || KNOWN_OPENCODE_DESKTOP_APPS;
+  const desktopBundleIds = options.desktopBundleIds || KNOWN_OPENCODE_DESKTOP_BUNDLE_IDS;
+  const isDesktopByName = matchesKnownApp(appName, desktopAppNames);
+  const isDesktopByBundle = bundleId ? hasKeyword(bundleId, desktopBundleIds) : false;
+  const isDesktopByGenericOpenCode =
+    (appName ? normalizeAppName(appName).includes('opencode') : false) ||
+    (bundleId ? bundleId.toLowerCase().includes('opencode') : false);
+
+  if (isDesktopByName || isDesktopByBundle || isDesktopByGenericOpenCode) {
+    debugLog(
+      `OpenCode client focus check: desktop app focused (app="${appName || ''}", bundle="${bundleId || ''}")`,
+      debug,
+    );
+    return true;
+  }
+
+  const browserAppNames = options.browserAppNames || KNOWN_BROWSER_APPS;
+  const browserBundleIds = options.browserBundleIds || KNOWN_BROWSER_BUNDLE_IDS;
+  const isBrowserByName = matchesKnownApp(appName, browserAppNames);
+  const isBrowserByBundle = bundleId ? hasKeyword(bundleId, browserBundleIds) : false;
+  const isBrowserFocused = isBrowserByName || isBrowserByBundle;
+  if (!isBrowserFocused) {
+    debugLog(
+      `OpenCode client focus check: non-browser app focused (app="${appName || ''}", bundle="${bundleId || ''}")`,
+      debug,
+    );
+    return false;
+  }
+
+  const browserTitleKeywords = options.browserTitleKeywords || OPENCODE_BROWSER_TITLE_KEYWORDS;
+  const browserUrlKeywords = options.browserUrlKeywords || OPENCODE_BROWSER_URL_KEYWORDS;
+  const titleSource = [context.windowTitle, context.rawOutput]
+    .filter((part): part is string => Boolean(part))
+    .join(' ');
+  const hasOpenCodeUrl = hasKeyword(context.browserUrl, browserUrlKeywords);
+  const hasOpenCodeTitle = hasKeyword(titleSource, browserTitleKeywords);
+  const isOpenCodeBrowserFocused = hasOpenCodeUrl || hasOpenCodeTitle;
+
+  debugLog(
+    `OpenCode client focus check: browser focused (app="${appName || ''}", bundle="${bundleId || ''}", title="${context.windowTitle || ''}", url="${context.browserUrl || ''}", hasOpenCodeUrl=${hasOpenCodeUrl}, hasOpenCodeTitle=${hasOpenCodeTitle})`,
+    debug,
+  );
+  return isOpenCodeBrowserFocused;
+};
+
+const parseYesNoBoolean = (value: string): boolean | null => {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'yes' || normalized === 'true' || normalized === '1') {
+    return true;
+  }
+  if (normalized === 'no' || normalized === 'false' || normalized === '0') {
+    return false;
+  }
+  return null;
+};
+
+const getMacOSConsoleLocked = async (debug = false, shellRunner?: ShellRunner): Promise<boolean | null> => {
+  try {
+    const { stdout } = await executeCommand(
+      'ioreg -l -n IOPMrootDomain -d1',
+      {
+        encoding: 'utf8',
+        timeout: 2000,
+        maxBuffer: 1024 * 1024,
+      },
+      shellRunner,
+    );
+
+    const match = stdout.match(/"IOConsoleLocked"\s*=\s*(Yes|No|true|false|1|0)/i);
+    if (!match || !match[1]) {
+      debugLog('presence.macos: could not parse IOConsoleLocked', debug);
+      return null;
+    }
+
+    const isLocked = parseYesNoBoolean(match[1]);
+    debugLog(`presence.macos: IOConsoleLocked=${match[1]} parsed=${String(isLocked)}`, debug);
+    return isLocked;
+  } catch (error) {
+    debugLog(`presence.macos: lock check failed: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+const getMacOSIdleSeconds = async (debug = false, shellRunner?: ShellRunner): Promise<number | null> => {
+  try {
+    const { stdout } = await executeCommand(
+      'ioreg -c IOHIDSystem',
+      {
+        encoding: 'utf8',
+        timeout: 2000,
+        maxBuffer: 1024 * 1024,
+      },
+      shellRunner,
+    );
+
+    const match = stdout.match(/"HIDIdleTime"\s*=\s*(\d+)/);
+    const idleNanosRaw = match?.[1];
+    if (!idleNanosRaw) {
+      debugLog('presence.macos: could not parse HIDIdleTime', debug);
+      return null;
+    }
+
+    const idleNanos = Number(idleNanosRaw);
+    if (!Number.isFinite(idleNanos)) {
+      debugLog(`presence.macos: HIDIdleTime is not numeric (${idleNanosRaw})`, debug);
+      return null;
+    }
+
+    const idleSeconds = Math.floor(idleNanos / 1_000_000_000);
+    debugLog(`presence.macos: idleSeconds=${idleSeconds}`, debug);
+    return idleSeconds;
+  } catch (error) {
+    debugLog(`presence.macos: idle check failed: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+const getMacOSDisplaySleepThresholdSeconds = async (
+  debug = false,
+  shellRunner?: ShellRunner,
+): Promise<number | null> => {
+  try {
+    const { stdout } = await executeCommand(
+      'pmset -g',
+      {
+        encoding: 'utf8',
+        timeout: 2000,
+        maxBuffer: 1024 * 128,
+      },
+      shellRunner,
+    );
+
+    const match = stdout.match(/\bdisplaysleep\s+(\d+(?:\.\d+)?)/i);
+    const sleepMinutesRaw = match?.[1];
+    if (!sleepMinutesRaw) {
+      debugLog('presence.macos: could not parse displaysleep from pmset', debug);
+      return null;
+    }
+
+    const sleepMinutes = Number(sleepMinutesRaw);
+    if (!Number.isFinite(sleepMinutes) || sleepMinutes <= 0) {
+      debugLog(`presence.macos: displaysleep not usable (${sleepMinutesRaw})`, debug);
+      return null;
+    }
+
+    const thresholdSeconds = Math.floor(sleepMinutes * 60);
+    debugLog(`presence.macos: displaysleep threshold=${thresholdSeconds}s`, debug);
+    return thresholdSeconds;
+  } catch (error) {
+    debugLog(`presence.macos: display sleep threshold check failed: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+const getMacOSDisplayAsleep = async (debug = false, shellRunner?: ShellRunner): Promise<boolean | null> => {
+  try {
+    const { stdout } = await executeCommand(
+      'swift -e \'import CoreGraphics; print(CGDisplayIsAsleep(CGMainDisplayID()) != 0 ? "1" : "0")\'',
+      {
+        encoding: 'utf8',
+        timeout: 3000,
+        maxBuffer: 1024,
+      },
+      shellRunner,
+    );
+
+    const parsed = parseYesNoBoolean(stdout.trim());
+    debugLog(`presence.macos: CGDisplayIsAsleep=${stdout.trim()} parsed=${String(parsed)}`, debug);
+    return parsed;
+  } catch (error) {
+    debugLog(`presence.macos: CGDisplayIsAsleep check failed: ${getErrorMessage(error)}`, debug);
+    return null;
+  }
+};
+
+/**
+ * Get whether the current user appears away (locked or screen asleep).
+ */
+export const getUserPresenceState = async (
+  options: UserPresenceOptions = {},
+): Promise<UserPresenceState> => {
+  const debug = options.debugLog || false;
+  const now = Date.now();
+
+  if (now - presenceCache.timestamp < PRESENCE_CACHE_TTL_MS) {
+    return {
+      supported: presenceCache.supported,
+      isLocked: presenceCache.isLocked,
+      isScreenAsleep: presenceCache.isScreenAsleep,
+      isAway: presenceCache.isAway,
+      idleSeconds: presenceCache.idleSeconds,
+      displaySleepThresholdSeconds: presenceCache.displaySleepThresholdSeconds,
+      reason: presenceCache.reason,
+    };
+  }
+
+  const platform = getPlatform();
+  if (platform !== 'darwin') {
+    const unsupportedState: UserPresenceState = {
+      supported: false,
+      isLocked: false,
+      isScreenAsleep: false,
+      isAway: false,
+      idleSeconds: null,
+      displaySleepThresholdSeconds: null,
+      reason: `User presence check not implemented on ${platform}`,
+    };
+    presenceCache = {
+      ...unsupportedState,
+      timestamp: now,
+    };
+    return unsupportedState;
+  }
+
+  const isLocked = await getMacOSConsoleLocked(debug, options.shellRunner);
+  const displayAsleepByApi = await getMacOSDisplayAsleep(debug, options.shellRunner);
+  const idleSeconds = await getMacOSIdleSeconds(debug, options.shellRunner);
+  const displaySleepThresholdSeconds =
+    (await getMacOSDisplaySleepThresholdSeconds(debug, options.shellRunner)) ||
+    options.idleThresholdSeconds ||
+    null;
+
+  const isScreenAsleep =
+    displayAsleepByApi === true ||
+    (displayAsleepByApi === null &&
+      idleSeconds !== null &&
+      displaySleepThresholdSeconds !== null &&
+      idleSeconds >= displaySleepThresholdSeconds);
+  const locked = isLocked === true;
+  const supported = isLocked !== null || displayAsleepByApi !== null || idleSeconds !== null;
+  const state: UserPresenceState = {
+    supported,
+    isLocked: locked,
+    isScreenAsleep,
+    isAway: locked || isScreenAsleep,
+    idleSeconds,
+    displaySleepThresholdSeconds,
+    reason: supported ? undefined : 'Could not read macOS presence signals',
+  };
+
+  presenceCache = {
+    ...state,
+    timestamp: now,
+  };
+
+  debugLog(
+    `presence: supported=${state.supported} locked=${state.isLocked} screenAsleep=${state.isScreenAsleep} idleSeconds=${String(state.idleSeconds)} thresholdSeconds=${String(state.displaySleepThresholdSeconds)} away=${state.isAway}`,
+    debug,
+  );
+
+  return state;
+};
+
+export const isUserAway = async (options: UserPresenceOptions = {}): Promise<boolean> => {
+  const state = await getUserPresenceState(options);
+  return state.isAway;
 };
 
 // ========================================
@@ -967,6 +1582,31 @@ export const clearFocusCache = (): void => {
     timestamp: 0,
     terminalName: null,
   };
+
+  frontmostContextCache = {
+    appName: null,
+    bundleId: null,
+    windowTitle: null,
+    browserUrl: null,
+    rawOutput: null,
+    timestamp: 0,
+  };
+};
+
+/**
+ * Clear user presence detection cache.
+ */
+export const clearPresenceCache = (): void => {
+  presenceCache = {
+    supported: false,
+    isLocked: false,
+    isScreenAsleep: false,
+    isAway: false,
+    idleSeconds: null,
+    displaySleepThresholdSeconds: null,
+    reason: 'No presence check has run yet',
+    timestamp: 0,
+  };
 };
 
 /**
@@ -984,16 +1624,40 @@ export const resetTerminalDetection = (): void => {
  */
 export const getCacheState = (): FocusCacheState => ({ ...focusCache });
 
+/**
+ * Get cached user presence state.
+ */
+export const getPresenceCacheState = (): UserPresenceState => ({
+  supported: presenceCache.supported,
+  isLocked: presenceCache.isLocked,
+  isScreenAsleep: presenceCache.isScreenAsleep,
+  isAway: presenceCache.isAway,
+  idleSeconds: presenceCache.idleSeconds,
+  displaySleepThresholdSeconds: presenceCache.displaySleepThresholdSeconds,
+  reason: presenceCache.reason,
+});
+
 // Default export for convenience
 export default {
   isTerminalFocused,
+  isOpenCodeClientFocused,
+  isUserAway,
+  getUserPresenceState,
   isFocusDetectionSupported,
   getTerminalName,
   getPlatform,
   clearFocusCache,
+  clearPresenceCache,
   resetTerminalDetection,
   getCacheState,
+  getPresenceCacheState,
   KNOWN_TERMINALS_MACOS,
   KNOWN_TERMINALS_WINDOWS,
   KNOWN_TERMINALS_LINUX,
+  KNOWN_OPENCODE_DESKTOP_APPS,
+  KNOWN_OPENCODE_DESKTOP_BUNDLE_IDS,
+  KNOWN_BROWSER_APPS,
+  KNOWN_BROWSER_BUNDLE_IDS,
+  OPENCODE_BROWSER_TITLE_KEYWORDS,
+  OPENCODE_BROWSER_URL_KEYWORDS,
 };

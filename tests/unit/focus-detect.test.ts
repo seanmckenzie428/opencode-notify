@@ -24,14 +24,22 @@ import {
 // Import the focus detection module
 import {
   isTerminalFocused,
+  isOpenCodeClientFocused,
+  getUserPresenceState,
+  isUserAway,
   isFocusDetectionSupported,
   getTerminalName,
   getPlatform,
   clearFocusCache,
+  clearPresenceCache,
   resetTerminalDetection,
   getCacheState,
+  getPresenceCacheState,
   KNOWN_TERMINALS_MACOS,
-  KNOWN_TERMINALS_WINDOWS
+  KNOWN_TERMINALS_WINDOWS,
+  KNOWN_OPENCODE_DESKTOP_APPS,
+  OPENCODE_BROWSER_TITLE_KEYWORDS,
+  OPENCODE_BROWSER_URL_KEYWORDS,
 } from '../../src/util/focus-detect.js';
 
 import focusDetect from '../../src/util/focus-detect.js';
@@ -59,12 +67,14 @@ describe('focus detection module', () => {
     // Create test temp directory and reset caches before each test
     createTestTempDir();
     clearFocusCache();
+    clearPresenceCache();
     resetTerminalDetection();
   });
   
   afterEach(() => {
     cleanupTestTempDir();
     clearFocusCache();
+    clearPresenceCache();
     resetTerminalDetection();
   });
 
@@ -1571,24 +1581,38 @@ describe('focus detection module', () => {
   describe('default export', () => {
     test('exports all expected functions', () => {
       expect(focusDetect).toHaveProperty('isTerminalFocused');
+      expect(focusDetect).toHaveProperty('isOpenCodeClientFocused');
+      expect(focusDetect).toHaveProperty('getUserPresenceState');
+      expect(focusDetect).toHaveProperty('isUserAway');
       expect(focusDetect).toHaveProperty('isFocusDetectionSupported');
       expect(focusDetect).toHaveProperty('getTerminalName');
       expect(focusDetect).toHaveProperty('getPlatform');
       expect(focusDetect).toHaveProperty('clearFocusCache');
+      expect(focusDetect).toHaveProperty('clearPresenceCache');
       expect(focusDetect).toHaveProperty('resetTerminalDetection');
       expect(focusDetect).toHaveProperty('getCacheState');
+      expect(focusDetect).toHaveProperty('getPresenceCacheState');
       expect(focusDetect).toHaveProperty('KNOWN_TERMINALS_MACOS');
       expect(focusDetect).toHaveProperty('KNOWN_TERMINALS_WINDOWS');
+      expect(focusDetect).toHaveProperty('KNOWN_OPENCODE_DESKTOP_APPS');
+      expect(focusDetect).toHaveProperty('KNOWN_OPENCODE_DESKTOP_BUNDLE_IDS');
+      expect(focusDetect).toHaveProperty('OPENCODE_BROWSER_TITLE_KEYWORDS');
+      expect(focusDetect).toHaveProperty('OPENCODE_BROWSER_URL_KEYWORDS');
     });
     
     test('default export functions are callable', async () => {
       expect(typeof focusDetect.isTerminalFocused).toBe('function');
+      expect(typeof focusDetect.isOpenCodeClientFocused).toBe('function');
+      expect(typeof focusDetect.getUserPresenceState).toBe('function');
+      expect(typeof focusDetect.isUserAway).toBe('function');
       expect(typeof focusDetect.isFocusDetectionSupported).toBe('function');
       expect(typeof focusDetect.getTerminalName).toBe('function');
       expect(typeof focusDetect.getPlatform).toBe('function');
       expect(typeof focusDetect.clearFocusCache).toBe('function');
+      expect(typeof focusDetect.clearPresenceCache).toBe('function');
       expect(typeof focusDetect.resetTerminalDetection).toBe('function');
       expect(typeof focusDetect.getCacheState).toBe('function');
+      expect(typeof focusDetect.getPresenceCacheState).toBe('function');
     });
     
     test('default export functions work correctly', async () => {
@@ -1922,6 +1946,235 @@ describe('focus detection module', () => {
       expect(result.focusCheckCalled).toBe(false);
       expect(focusCheckCallCount).toBe(0);
       expect(result.shouldSuppress).toBe(false);
+    });
+  });
+
+  describe('OpenCode client focus detection', () => {
+    let platformSpy;
+
+    beforeEach(() => {
+      platformSpy = spyOn(os, 'platform').mockReturnValue('darwin');
+      clearFocusCache();
+    });
+
+    afterEach(() => {
+      if (platformSpy) {
+        platformSpy.mockRestore();
+      }
+      clearFocusCache();
+    });
+
+    test('detects OpenCode desktop app as focused', async () => {
+      const shellRunner = createMockShellRunner({
+        handler: () => ({
+          stdout: Buffer.from('OpenCode|||ai.opencode.desktop|||OpenCode - Session|||\n'),
+          stderr: Buffer.from(''),
+          exitCode: 0,
+        }),
+      });
+
+      const result = await isOpenCodeClientFocused({ shellRunner });
+      expect(result).toBe(true);
+      expect(shellRunner.wasCalledWith('osascript')).toBe(true);
+    });
+
+    test('detects browser OpenCode tab via title keywords', async () => {
+      const shellRunner = createMockShellRunner({
+        handler: () => ({
+          stdout: Buffer.from('Google Chrome|||com.google.Chrome|||OpenCode - app.opencode.ai|||https://app.opencode.ai/session/123\n'),
+          stderr: Buffer.from(''),
+          exitCode: 0,
+        }),
+      });
+
+      const result = await isOpenCodeClientFocused({ shellRunner });
+      expect(result).toBe(true);
+    });
+
+    test('detects browser OpenCode tab via URL keywords when title is generic', async () => {
+      const shellRunner = createMockShellRunner({
+        handler: () => ({
+          stdout: Buffer.from('Google Chrome|||com.google.Chrome|||Dashboard|||https://app.opencode.ai/session/123\n'),
+          stderr: Buffer.from(''),
+          exitCode: 0,
+        }),
+      });
+
+      const result = await isOpenCodeClientFocused({ shellRunner });
+      expect(result).toBe(true);
+    });
+
+    test('does not match unrelated browser tab titles', async () => {
+      const shellRunner = createMockShellRunner({
+        handler: () => ({
+          stdout: Buffer.from('Google Chrome|||com.google.Chrome|||Inbox - Gmail|||https://mail.google.com\n'),
+          stderr: Buffer.from(''),
+          exitCode: 0,
+        }),
+      });
+
+      const result = await isOpenCodeClientFocused({ shellRunner });
+      expect(result).toBe(false);
+    });
+
+    test('supports custom browser title keywords', async () => {
+      const shellRunner = createMockShellRunner({
+        handler: () => ({
+          stdout: Buffer.from('Google Chrome|||com.google.Chrome|||My Open Code Dashboard|||https://example.com\n'),
+          stderr: Buffer.from(''),
+          exitCode: 0,
+        }),
+      });
+
+      const result = await isOpenCodeClientFocused({
+        shellRunner,
+        browserTitleKeywords: ['dashboard'],
+      });
+      expect(result).toBe(true);
+    });
+
+    test('ships expected OpenCode focus constants', () => {
+      expect(Array.isArray(KNOWN_OPENCODE_DESKTOP_APPS)).toBe(true);
+      expect(KNOWN_OPENCODE_DESKTOP_APPS.length).toBeGreaterThan(0);
+      expect(KNOWN_OPENCODE_DESKTOP_APPS.some((name) => name.includes('OpenCode'))).toBe(true);
+      expect(Array.isArray(OPENCODE_BROWSER_TITLE_KEYWORDS)).toBe(true);
+      expect(OPENCODE_BROWSER_TITLE_KEYWORDS).toContain('opencode');
+      expect(Array.isArray(OPENCODE_BROWSER_URL_KEYWORDS)).toBe(true);
+      expect(OPENCODE_BROWSER_URL_KEYWORDS).toContain('opencode.ai');
+    });
+  });
+
+  describe('user presence detection (macOS)', () => {
+    let platformSpy;
+
+    const createPresenceShell = ({
+      lockState = 'No',
+      displayAsleep = '0',
+      idleNanos = '1000000000',
+      displaySleepMinutes = '10',
+      failSwift = false,
+    } = {}) =>
+      createMockShellRunner({
+        handler: (command) => {
+          if (command.includes('ioreg -l -n IOPMrootDomain -d1')) {
+            return {
+              stdout: Buffer.from(`"IOConsoleLocked" = ${lockState}\n`),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('swift -e')) {
+            if (failSwift) {
+              throw new Error('swift unavailable');
+            }
+            return {
+              stdout: Buffer.from(`${displayAsleep}\n`),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('ioreg -c IOHIDSystem')) {
+            return {
+              stdout: Buffer.from(`"HIDIdleTime" = ${idleNanos}\n`),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('pmset -g')) {
+            return {
+              stdout: Buffer.from(` displaysleep ${displaySleepMinutes}\n`),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          return {
+            stdout: Buffer.from(''),
+            stderr: Buffer.from(''),
+            exitCode: 0,
+          };
+        },
+      });
+
+    beforeEach(() => {
+      platformSpy = spyOn(os, 'platform').mockReturnValue('darwin');
+      clearPresenceCache();
+    });
+
+    afterEach(() => {
+      if (platformSpy) {
+        platformSpy.mockRestore();
+      }
+      clearPresenceCache();
+    });
+
+    test('reports away when console is locked', async () => {
+      const shellRunner = createPresenceShell({ lockState: 'Yes', displayAsleep: '0' });
+
+      const state = await getUserPresenceState({ shellRunner });
+      expect(state.supported).toBe(true);
+      expect(state.isLocked).toBe(true);
+      expect(state.isScreenAsleep).toBe(false);
+      expect(state.isAway).toBe(true);
+    });
+
+    test('reports away when display is asleep via CoreGraphics API bridge', async () => {
+      const shellRunner = createPresenceShell({ lockState: 'No', displayAsleep: '1' });
+
+      const state = await getUserPresenceState({ shellRunner });
+      expect(state.supported).toBe(true);
+      expect(state.isLocked).toBe(false);
+      expect(state.isScreenAsleep).toBe(true);
+      expect(state.isAway).toBe(true);
+    });
+
+    test('falls back to idle+pmset heuristic when CoreGraphics sleep check fails', async () => {
+      const shellRunner = createPresenceShell({
+        lockState: 'No',
+        failSwift: true,
+        idleNanos: String(15 * 60 * 1_000_000_000),
+        displaySleepMinutes: '10',
+      });
+
+      const state = await getUserPresenceState({ shellRunner });
+      expect(state.supported).toBe(true);
+      expect(state.isLocked).toBe(false);
+      expect(state.isScreenAsleep).toBe(true);
+      expect(state.isAway).toBe(true);
+    });
+
+    test('isUserAway helper mirrors presence state', async () => {
+      const shellRunner = createPresenceShell({ lockState: 'Yes' });
+      const away = await isUserAway({ shellRunner });
+      expect(away).toBe(true);
+    });
+
+    test('presence results are cached', async () => {
+      const shellRunner = createPresenceShell({ lockState: 'No', displayAsleep: '0' });
+
+      await getUserPresenceState({ shellRunner });
+      const firstCallCount = shellRunner.getCallCount();
+
+      await getUserPresenceState({ shellRunner });
+      const secondCallCount = shellRunner.getCallCount();
+
+      expect(firstCallCount).toBeGreaterThan(0);
+      expect(secondCallCount).toBe(firstCallCount);
+
+      const cache = getPresenceCacheState();
+      expect(cache.supported).toBe(true);
+    });
+
+    test('returns unsupported state on non-macOS platforms', async () => {
+      platformSpy.mockRestore();
+      platformSpy = spyOn(os, 'platform').mockReturnValue('linux');
+
+      const state = await getUserPresenceState();
+      expect(state.supported).toBe(false);
+      expect(state.isAway).toBe(false);
     });
   });
 });

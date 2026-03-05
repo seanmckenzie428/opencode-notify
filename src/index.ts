@@ -12,7 +12,7 @@ import { createTTS, getTTSConfig } from './util/tts.js';
 import { getSmartMessage } from './util/ai-messages.js';
 import { notifyTaskComplete, notifyPermissionRequest, notifyQuestion, notifyError } from './util/desktop-notify.js';
 import { notifyWebhookIdle, notifyWebhookPermission, notifyWebhookError, notifyWebhookQuestion } from './util/webhook.js';
-import { isTerminalFocused } from './util/focus-detect.js';
+import { getUserPresenceState, isOpenCodeClientFocused } from './util/focus-detect.js';
 import { pickThemeSound } from './util/sound-theme.js';
 import { getProjectSound } from './util/per-project-sound.js';
 
@@ -236,13 +236,11 @@ export default async function SmartVoiceNotifyPlugin({
   };
 
   /**
-   * Check if notifications should be suppressed due to terminal focus.
+   * Check if notifications should be suppressed due to active OpenCode client focus.
    * Returns true if we should NOT send sound/desktop notifications.
-   * 
+   *
    * Note: TTS reminders are NEVER suppressed by this function.
    * The user might step away after the task completes, so reminders should still work.
-   * 
-   * @returns {Promise<boolean>} True if notifications should be suppressed
    */
   const shouldSuppressNotification = async (): Promise<boolean> => {
     // If alwaysNotify is true, never suppress
@@ -257,11 +255,18 @@ export default async function SmartVoiceNotifyPlugin({
       return false;
     }
     
-    // Check if terminal is focused
+    // Check whether the OpenCode desktop app or browser client is currently focused
     try {
-      const isFocused = await isTerminalFocused({ debugLog: config.debugLog });
+      const isFocused = await isOpenCodeClientFocused({
+        debugLog: config.debugLog,
+        shellRunner: $,
+        desktopAppNames: config.openCodeDesktopAppNames,
+        browserAppNames: config.openCodeBrowserAppNames,
+        browserTitleKeywords: config.openCodeBrowserTitleKeywords,
+        browserUrlKeywords: config.openCodeBrowserUrlKeywords,
+      });
       if (isFocused) {
-        debugLog('shouldSuppressNotification: terminal is focused, suppressing sound/desktop notifications');
+        debugLog('shouldSuppressNotification: OpenCode client is focused, suppressing sound/desktop notifications');
         return true;
       }
     } catch (error) {
@@ -349,11 +354,7 @@ export default async function SmartVoiceNotifyPlugin({
 
   /**
    * Send a webhook notification (if enabled).
-   * Webhook notifications are independent and fire immediately.
-   * 
-   * @param {'idle' | 'permission' | 'question' | 'error'} type - Notification type
-   * @param {string} message - Notification message
-   * @param {object} options - Additional options (count, sessionId)
+   * Webhooks are only sent when the user appears away (locked/screen asleep).
    */
   const sendWebhookNotify = (type: NotificationEventType, message: string, options: NotificationMetaOptions = {}): void => {
     if (!config.enableWebhook || !config.webhookUrl) return;
@@ -364,40 +365,50 @@ export default async function SmartVoiceNotifyPlugin({
       return;
     }
     
-    try {
-      // Note: SDK's Project type doesn't have 'name' property, so we use derivedProjectName
-      const webhookOptions: WebhookNotifyOptions = {
-        projectName: derivedProjectName ?? undefined,
-        sessionId: options.sessionId,
-        count: options.count || 1,
-        username: config.webhookUsername,
-        debugLog: config.debugLog,
-        mention: type === 'permission' ? config.webhookMentionOnPermission : false,
-      };
-      
-      // Fire and forget (no await)
-      if (type === 'idle') {
-        notifyWebhookIdle(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
-          debugLog(`Webhook notification error (idle): ${getErrorMessage(error)}`);
+    void (async () => {
+      try {
+        const presence = await getUserPresenceState({
+          debugLog: config.debugLog,
+          shellRunner: $,
+          idleThresholdSeconds: config.idleThresholdSeconds,
         });
-      } else if (type === 'permission') {
-        notifyWebhookPermission(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
-          debugLog(`Webhook notification error (permission): ${getErrorMessage(error)}`);
-        });
-      } else if (type === 'question') {
-        notifyWebhookQuestion(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
-          debugLog(`Webhook notification error (question): ${getErrorMessage(error)}`);
-        });
-      } else if (type === 'error') {
-        notifyWebhookError(config.webhookUrl, message, webhookOptions).catch((error: unknown) => {
-          debugLog(`Webhook notification error (error): ${getErrorMessage(error)}`);
-        });
+
+        if (presence.supported && !presence.isAway) {
+          debugLog(
+            `sendWebhookNotify: skipped ${type} (user active: locked=${presence.isLocked}, screenAsleep=${presence.isScreenAsleep}, idle=${String(presence.idleSeconds)}s)`,
+          );
+          return;
+        }
+
+        if (!presence.supported) {
+          debugLog(`sendWebhookNotify: presence unavailable (${presence.reason || 'unknown'}), sending ${type}`);
+        }
+
+        // Note: SDK's Project type doesn't have 'name' property, so we use derivedProjectName
+        const webhookOptions: WebhookNotifyOptions = {
+          projectName: derivedProjectName ?? undefined,
+          sessionId: options.sessionId,
+          count: options.count || 1,
+          username: config.webhookUsername,
+          debugLog: config.debugLog,
+          mention: type === 'permission' ? config.webhookMentionOnPermission : false,
+        };
+
+        if (type === 'idle') {
+          await notifyWebhookIdle(config.webhookUrl, message, webhookOptions);
+        } else if (type === 'permission') {
+          await notifyWebhookPermission(config.webhookUrl, message, webhookOptions);
+        } else if (type === 'question') {
+          await notifyWebhookQuestion(config.webhookUrl, message, webhookOptions);
+        } else if (type === 'error') {
+          await notifyWebhookError(config.webhookUrl, message, webhookOptions);
+        }
+
+        debugLog(`sendWebhookNotify: sent ${type} notification`);
+      } catch (error) {
+        debugLog(`sendWebhookNotify error: ${getErrorMessage(error)}`);
       }
-      
-      debugLog(`sendWebhookNotify: sent ${type} notification`);
-    } catch (error) {
-      debugLog(`sendWebhookNotify error: ${getErrorMessage(error)}`);
-    }
+    })();
   };
 
   /**
@@ -906,7 +917,7 @@ export default async function SmartVoiceNotifyPlugin({
     if (!suppressPermission) {
       sendDesktopNotify('permission', desktopMessage, { count: batchCount });
     } else {
-      debugLog('processPermissionBatch: desktop notification suppressed (terminal focused)');
+      debugLog('processPermissionBatch: desktop notification suppressed (OpenCode client focused)');
     }
 
     // Step 1c: Send webhook notification
@@ -917,7 +928,7 @@ export default async function SmartVoiceNotifyPlugin({
     if (!suppressPermission) {
       await playSound(config.permissionSound, soundLoops, 'permission');
     } else {
-      debugLog('processPermissionBatch: sound suppressed (terminal focused)');
+      debugLog('processPermissionBatch: sound suppressed (OpenCode client focused)');
     }
 
     // CHECK: Did user already respond while sound was playing?
@@ -1013,7 +1024,7 @@ export default async function SmartVoiceNotifyPlugin({
     if (!suppressQuestion) {
       sendDesktopNotify('question', desktopMessage, { count: totalQuestionCount });
     } else {
-      debugLog('processQuestionBatch: desktop notification suppressed (terminal focused)');
+      debugLog('processQuestionBatch: desktop notification suppressed (OpenCode client focused)');
     }
 
     // Step 1c: Send webhook notification
@@ -1023,7 +1034,7 @@ export default async function SmartVoiceNotifyPlugin({
     if (!suppressQuestion) {
       await playSound(config.questionSound, 2, 'question');
     } else {
-      debugLog('processQuestionBatch: sound suppressed (terminal focused)');
+      debugLog('processQuestionBatch: sound suppressed (OpenCode client focused)');
     }
 
     // CHECK: Did user already respond while sound was playing?
@@ -1323,7 +1334,7 @@ export default async function SmartVoiceNotifyPlugin({
           if (!suppressIdle) {
             sendDesktopNotify('idle', idleDesktopMessage);
           } else {
-            debugLog('session.idle: desktop notification suppressed (terminal focused)');
+            debugLog('session.idle: desktop notification suppressed (OpenCode client focused)');
           }
 
           // Step 1c: Send webhook notification
@@ -1335,7 +1346,7 @@ export default async function SmartVoiceNotifyPlugin({
             if (!suppressIdle) {
               await playSound(config.idleSound, 1, 'idle');
             } else {
-              debugLog('session.idle: sound suppressed (terminal focused)');
+              debugLog('session.idle: sound suppressed (OpenCode client focused)');
             }
           }
           
@@ -1425,7 +1436,7 @@ export default async function SmartVoiceNotifyPlugin({
           if (!suppressError) {
             sendDesktopNotify('error', errorDesktopMessage);
           } else {
-            debugLog('session.error: desktop notification suppressed (terminal focused)');
+            debugLog('session.error: desktop notification suppressed (OpenCode client focused)');
           }
 
           // Step 1c: Send webhook notification
@@ -1437,7 +1448,7 @@ export default async function SmartVoiceNotifyPlugin({
             if (!suppressError) {
               await playSound(config.errorSound, 2, 'error');  // Play twice for urgency
             } else {
-              debugLog('session.error: sound suppressed (terminal focused)');
+              debugLog('session.error: sound suppressed (OpenCode client focused)');
             }
           }
 

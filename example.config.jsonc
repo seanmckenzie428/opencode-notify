@@ -410,18 +410,50 @@
     // ============================================================
     // FOCUS DETECTION SETTINGS
     // ============================================================
-    // Suppress sound/desktop notifications when terminal window is focused.
-    // Cross-platform: Windows, macOS, and Linux (X11 via xdotool/xprop, Wayland via gdbus).
+    // Suppress sound/desktop notifications when an OpenCode client is focused.
+    // This checks the OpenCode desktop app or a browser tab/window title containing OpenCode.
     // Default: false (notifications always play regardless of focus)
-    // Set to true to avoid notification spam when actively working in terminal
+    // Set to true to avoid notification spam while actively using OpenCode
     "suppressWhenFocused": false,
+    // Override focus detection: always send notifications even when OpenCode is focused
     "alwaysNotify": false,
+
+    // Tune desktop app matching (frontmost app names that count as OpenCode desktop)
+    "openCodeDesktopAppNames": ["OpenCode", "Open Code", "OpenCode Desktop"],
+
+    // Browser app names considered for OpenCode web-client focus checks
+    "openCodeBrowserAppNames": [
+      "Safari",
+      "Google Chrome",
+      "Chrome",
+      "Arc",
+      "Firefox",
+      "Brave Browser",
+      "Microsoft Edge",
+      "Edge",
+      "Opera",
+      "Vivaldi",
+      "Chromium",
+      "msedge",
+      "msedge.exe",
+      "chrome",
+      "chrome.exe",
+      "firefox",
+      "firefox.exe"
+    ],
+
+    // Keywords matched against focused browser title
+    "openCodeBrowserTitleKeywords": ["opencode", "open code", "opencode.ai"],
+
+    // Keywords matched against focused browser URL (when available)
+    "openCodeBrowserUrlKeywords": ["opencode.ai", "opencode", "localhost:4096", "opencode.local", "opencode.local:4096"],
 
     // ============================================================
     // WEBHOOK NOTIFICATION SETTINGS (Discord/Generic)
     // ============================================================
     // Send notifications to a Discord webhook or any compatible endpoint.
     // This allows you to receive notifications on your phone or other devices.
+    // Webhooks are only sent when user appears away (screen locked or asleep).
     
     // Enable webhook notifications
     "enableWebhook": false,

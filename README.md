@@ -57,8 +57,8 @@ The plugin automatically tries multiple TTS engines in order, falling back if on
 ### System Integration
 - **Native Desktop Notifications**: Windows (Toast), macOS (Notification Center), and Linux (notify-send) support
 - **Native Edge TTS**: No external dependencies (Python/pip) required
-- **Focus Detection** (Cross-platform): Suppresses notifications when terminal is focused (Windows, macOS, Linux)
-- **Webhook Integration**: Receive notifications on Discord or any custom webhook endpoint when tasks finish or need attention
+- **Focus Detection**: Suppresses notifications when the OpenCode desktop app (or OpenCode web client tab) is focused
+- **Webhook Integration**: Receive notifications on Discord or any custom webhook endpoint when tasks finish or need attention (only while you're away)
 - **Themed Sound Packs**: Use custom sound collections (e.g., Warcraft, StarCraft) by simply pointing to a directory
 - **Per-Project Sounds**: Assign unique sounds to different projects for easy identification
 - **Wake monitor** from sleep before notifying
@@ -155,10 +155,14 @@ If you prefer to create the config manually, add a `smart-voice-notify.jsonc` fi
     "ttsReminderDelaySeconds": 30,
     "enableFollowUpReminders": true,
     
-    // Focus Detection (suppress notifications when terminal is focused)
+    // Focus Detection (suppress notifications when OpenCode client is focused)
     // Default: false (notifications always play)
     "suppressWhenFocused": false,
     "alwaysNotify": false,
+    "openCodeDesktopAppNames": ["OpenCode", "Open Code", "OpenCode Desktop"],
+    "openCodeBrowserAppNames": ["Safari", "Google Chrome", "Arc", "Firefox", "Brave Browser", "Microsoft Edge"],
+    "openCodeBrowserTitleKeywords": ["opencode", "open code", "opencode.ai"],
+    "openCodeBrowserUrlKeywords": ["opencode.ai", "opencode", "localhost:4096", "opencode.local", "opencode.local:4096"],
 
     // AI-generated messages (optional - requires local AI server)
     "enableAIMessages": false,
@@ -249,7 +253,7 @@ If you want dynamic, AI-generated notification messages instead of preset ones, 
 
 ### Discord / Webhook Integration (Optional)
 
-Receive remote notifications on Discord or any custom endpoint. This is perfect for long-running tasks when you're away from your computer.
+Receive remote notifications on Discord or any custom endpoint. Webhooks only fire when you're away (screen locked or asleep), so you don't get pinged while actively using your machine.
 
 1. **Create a Discord Webhook**:
    - In Discord, go to **Server Settings** > **Integrations** > **Webhooks**.
@@ -374,7 +378,13 @@ You can replace individual sound files with entire "Sound Themes" (like the clas
 - **Linux**: `paplay` or `aplay`
 
 ### For Focus Detection
-Focus detection suppresses sound and desktop notifications when the terminal is focused. Also detects minimized or hidden terminal windows.
+Focus detection suppresses sound and desktop notifications when you're actively using OpenCode (desktop app or matching web client tab/window).
+
+You can tune matching for your setup with:
+- `openCodeDesktopAppNames`
+- `openCodeBrowserAppNames`
+- `openCodeBrowserTitleKeywords`
+- `openCodeBrowserUrlKeywords`
 
 | Platform | Support | Notes |
 |----------|---------|-------|
@@ -382,7 +392,7 @@ Focus detection suppresses sound and desktop notifications when the terminal is 
 | **Windows** | ✅ Full | Uses native window focus and visibility detection |
 | **Linux** | ✅ Full | Uses `xdotool` / `xprop` (X11) or `gdbus` (Wayland) |
 
-> **Note**: If focus detection fails on any platform, notifications are still sent (fail-open behavior). TTS reminders are never suppressed, even when focused, since users may step away after seeing the toast.
+> **Note**: If focus detection fails, notifications are still sent (fail-open behavior). TTS reminders are never suppressed, even when focused, since users may step away after seeing the toast.
 
 ### For Webhook Notifications
 - **Discord**: Full support for Discord's webhook embed format.

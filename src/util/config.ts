@@ -297,6 +297,34 @@ export const getDefaultConfigObject = (): PluginConfig => ({
   showProjectInNotification: true,
   suppressWhenFocused: false,
   alwaysNotify: false,
+  openCodeDesktopAppNames: ['OpenCode', 'Open Code', 'OpenCode Desktop'],
+  openCodeBrowserAppNames: [
+    'Safari',
+    'Google Chrome',
+    'Chrome',
+    'Arc',
+    'Firefox',
+    'Brave Browser',
+    'Microsoft Edge',
+    'Edge',
+    'Opera',
+    'Vivaldi',
+    'Chromium',
+    'msedge',
+    'msedge.exe',
+    'chrome',
+    'chrome.exe',
+    'firefox',
+    'firefox.exe',
+  ],
+  openCodeBrowserTitleKeywords: ['opencode', 'open code', 'opencode.ai'],
+  openCodeBrowserUrlKeywords: [
+    'opencode.ai',
+    'opencode',
+    'localhost:4096',
+    'opencode.local',
+    'opencode.local:4096',
+  ],
   enableWebhook: false,
   webhookUrl: '',
   webhookUsername: 'OpenCode Notify',
@@ -842,21 +870,61 @@ const generateDefaultConfig = (overrides: Partial<PluginConfig> = {}, version = 
     // ============================================================
     // FOCUS DETECTION SETTINGS
     // ============================================================
-    // Suppress sound/desktop notifications when terminal window is focused.
-    // Cross-platform: Windows, macOS, and Linux (X11 via xdotool/xprop, Wayland via gdbus).
+    // Suppress sound/desktop notifications when an OpenCode client is focused.
+    // This checks the OpenCode desktop app or a browser tab/window title containing OpenCode.
     // Default: false (notifications always play regardless of focus)
-    // Set to true to avoid notification spam when actively working in terminal
+    // Set to true to avoid notification spam while actively using OpenCode
     "suppressWhenFocused": ${overrides.suppressWhenFocused !== undefined ? overrides.suppressWhenFocused : false},
     
-    // Override focus detection: always send notifications even when terminal is focused
+    // Override focus detection: always send notifications even when OpenCode is focused
     // Set to true to disable focus-based suppression entirely
     "alwaysNotify": ${overrides.alwaysNotify !== undefined ? overrides.alwaysNotify : false},
+
+    // Tune desktop app matching (frontmost app names that count as OpenCode desktop)
+    // Add or remove names if your app label differs from defaults.
+    "openCodeDesktopAppNames": ${formatJSON(overrides.openCodeDesktopAppNames !== undefined ? overrides.openCodeDesktopAppNames : ['OpenCode', 'Open Code', 'OpenCode Desktop'], 4)},
+
+    // Browser app names considered for OpenCode web-client focus checks
+    // If frontmost app matches one of these, title/URL checks are applied.
+    "openCodeBrowserAppNames": ${formatJSON(overrides.openCodeBrowserAppNames !== undefined ? overrides.openCodeBrowserAppNames : [
+      'Safari',
+      'Google Chrome',
+      'Chrome',
+      'Arc',
+      'Firefox',
+      'Brave Browser',
+      'Microsoft Edge',
+      'Edge',
+      'Opera',
+      'Vivaldi',
+      'Chromium',
+      'msedge',
+      'msedge.exe',
+      'chrome',
+      'chrome.exe',
+      'firefox',
+      'firefox.exe',
+    ], 4)},
+
+    // Keywords matched against the focused browser window/tab title.
+    "openCodeBrowserTitleKeywords": ${formatJSON(overrides.openCodeBrowserTitleKeywords !== undefined ? overrides.openCodeBrowserTitleKeywords : ['opencode', 'open code', 'opencode.ai'], 4)},
+
+    // Keywords matched against focused browser tab URL (when available).
+    // Useful when tab titles don't include "OpenCode".
+    "openCodeBrowserUrlKeywords": ${formatJSON(overrides.openCodeBrowserUrlKeywords !== undefined ? overrides.openCodeBrowserUrlKeywords : [
+      'opencode.ai',
+      'opencode',
+      'localhost:4096',
+      'opencode.local',
+      'opencode.local:4096',
+    ], 4)},
     
     // ============================================================
     // WEBHOOK NOTIFICATION SETTINGS (Discord/Generic)
     // ============================================================
     // Send notifications to a Discord webhook or any compatible endpoint.
     // This allows you to receive notifications on your phone or other devices.
+    // Webhooks are only sent when user appears away (screen locked or asleep).
     
     // Enable webhook notifications
     "enableWebhook": ${overrides.enableWebhook !== undefined ? overrides.enableWebhook : false},

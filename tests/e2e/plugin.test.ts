@@ -1,8 +1,9 @@
 // @ts-nocheck
-import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import SmartVoiceNotifyPlugin from '../../src/index.js';
+import { clearPresenceCache } from '../../src/util/focus-detect.js';
 import { 
   createTestTempDir, 
   cleanupTestTempDir, 
@@ -29,9 +30,11 @@ describe('Plugin E2E (Plugin Core)', () => {
     createTestAssets();
     mockClient = createMockClient();
     mockShell = createMockShellRunner();
+    clearPresenceCache();
   });
   
   afterEach(() => {
+    clearPresenceCache();
     cleanupTestTempDir();
   });
 
@@ -482,6 +485,150 @@ describe('Plugin E2E (Plugin Core)', () => {
       // Reminder SHOULD have fired (via SAPI script)
       expect(mockShell.wasCalledWith('powershell.exe')).toBe(true);
       expect(mockShell.wasCalledWith('.ps1')).toBe(true);
+    });
+  });
+
+  describe('webhook away gating', () => {
+    let originalFetch;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    test('sends webhook when user is away (locked)', async () => {
+      globalThis.fetch = mock(() => Promise.resolve(new Response(null, { status: 204 })));
+
+      const shellRunner = createMockShellRunner({
+        handler: (command) => {
+          if (command.includes('ioreg -l -n IOPMrootDomain -d1')) {
+            return {
+              stdout: Buffer.from('"IOConsoleLocked" = Yes\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('swift -e')) {
+            return {
+              stdout: Buffer.from('0\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('ioreg -c IOHIDSystem')) {
+            return {
+              stdout: Buffer.from('"HIDIdleTime" = 1000000000\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('pmset -g')) {
+            return {
+              stdout: Buffer.from(' displaysleep 10\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          return {
+            stdout: Buffer.from(''),
+            stderr: Buffer.from(''),
+            exitCode: 0,
+          };
+        },
+      });
+
+      createTestConfig(createMinimalConfig({
+        enabled: true,
+        enableWebhook: true,
+        webhookUrl: 'https://discord.com/api/webhooks/123/abc',
+        enableDesktopNotification: false,
+        enableSound: false,
+        enableToast: false,
+      }));
+
+      const plugin = await SmartVoiceNotifyPlugin({
+        project: { name: 'TestProject' },
+        client: mockClient,
+        $: shellRunner,
+      });
+
+      await plugin.event({ event: mockEvents.sessionIdle('session-webhook-away') });
+      await wait(100);
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('skips webhook when user is active (unlocked + screen awake)', async () => {
+      globalThis.fetch = mock(() => Promise.resolve(new Response(null, { status: 204 })));
+
+      const shellRunner = createMockShellRunner({
+        handler: (command) => {
+          if (command.includes('ioreg -l -n IOPMrootDomain -d1')) {
+            return {
+              stdout: Buffer.from('"IOConsoleLocked" = No\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('swift -e')) {
+            return {
+              stdout: Buffer.from('0\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('ioreg -c IOHIDSystem')) {
+            return {
+              stdout: Buffer.from('"HIDIdleTime" = 1000000000\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          if (command.includes('pmset -g')) {
+            return {
+              stdout: Buffer.from(' displaysleep 10\n'),
+              stderr: Buffer.from(''),
+              exitCode: 0,
+            };
+          }
+
+          return {
+            stdout: Buffer.from(''),
+            stderr: Buffer.from(''),
+            exitCode: 0,
+          };
+        },
+      });
+
+      createTestConfig(createMinimalConfig({
+        enabled: true,
+        enableWebhook: true,
+        webhookUrl: 'https://discord.com/api/webhooks/123/abc',
+        enableDesktopNotification: false,
+        enableSound: false,
+        enableToast: false,
+      }));
+
+      const plugin = await SmartVoiceNotifyPlugin({
+        project: { name: 'TestProject' },
+        client: mockClient,
+        $: shellRunner,
+      });
+
+      await plugin.event({ event: mockEvents.sessionIdle('session-webhook-active') });
+      await wait(100);
+
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
   });
 

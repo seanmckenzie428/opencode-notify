@@ -138,6 +138,10 @@ export interface PluginConfig {
   showProjectInNotification: boolean;
   suppressWhenFocused: boolean;
   alwaysNotify: boolean;
+  openCodeDesktopAppNames: string[];
+  openCodeBrowserAppNames: string[];
+  openCodeBrowserTitleKeywords: string[];
+  openCodeBrowserUrlKeywords: string[];
 
   // Webhooks
   enableWebhook: boolean;
