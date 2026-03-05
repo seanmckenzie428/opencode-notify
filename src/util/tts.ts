@@ -524,7 +524,11 @@ ${ssml}
   const speakWithSay = async (text: string): Promise<boolean> => {
     if (platform !== 'darwin' || !shell) return false;
     try {
-      await shell`say ${text}`.quiet();
+      const result = await shell`say ${text}`.nothrow().quiet();
+      if (result.exitCode !== 0) {
+        debugLog(`speakWithSay failed with code ${result.exitCode}: ${outputToString(result.stderr)}`);
+        return false;
+      }
       return true;
     } catch (error) {
       debugLog(`speakWithSay error: ${getErrorMessage(error) || String(error) || 'Unknown error'}`);
